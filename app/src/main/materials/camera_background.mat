@@ -1,0 +1,35 @@
+// Full-screen camera image drawn behind all virtual content.
+material {
+    name : CameraBackground,
+    parameters : [
+        {
+            type : samplerExternal,
+            name : cameraTexture
+        }
+    ],
+    requires : [
+        uv0
+    ],
+    // Vertex positions are given directly in normalized device coordinates.
+    vertexDomain : device,
+    shadingModel : unlit,
+    culling : none,
+    depthWrite : false,
+    depthCulling : false,
+    // UVs come from ARCore in GL texture convention; use them as-is.
+    flipUV : false
+}
+
+fragment {
+    // The camera image is sRGB-encoded. Converting it to linear lets the sRGB
+    // output stage reproduce the original pixel values unchanged.
+    vec3 srgbToLinear(vec3 c) {
+        return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec3 color = texture(materialParams_cameraTexture, getUV0()).rgb;
+        material.baseColor = vec4(srgbToLinear(color), 1.0);
+    }
+}

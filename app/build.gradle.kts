@@ -16,6 +16,11 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // Real phones are ARM; x86 builds are only useful for emulators, which can't run ARCore here.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -56,6 +61,8 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(libs.arcore)
+    implementation(libs.filament.android)
+    implementation(libs.filament.gltfio)
 
     testImplementation(libs.junit)
 }

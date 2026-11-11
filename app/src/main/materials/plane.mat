@@ -1,0 +1,36 @@
+// Semi-transparent overlay with a metric grid for detected floors and walls.
+material {
+    name : Plane,
+    parameters : [
+        {
+            type : float4,
+            name : color
+        },
+        {
+            type : float,
+            name : gridSpacing
+        }
+    ],
+    requires : [
+        uv0
+    ],
+    shadingModel : unlit,
+    blending : transparent,
+    culling : none,
+    depthWrite : false
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        // uv0 holds plane-local coordinates in metres: draw a line every gridSpacing metres.
+        vec2 cell = getUV0() / materialParams.gridSpacing;
+        vec2 distanceToLine = abs(fract(cell - 0.5) - 0.5) / fwidth(cell);
+        float line = 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
+
+        vec4 color = materialParams.color;
+        float alpha = mix(color.a, min(color.a * 3.0, 0.9), line);
+        // Transparent blending in Filament expects premultiplied alpha.
+        material.baseColor = vec4(color.rgb * alpha, alpha);
+    }
+}

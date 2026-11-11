@@ -23,10 +23,20 @@ Android app for previewing furniture and wall paint/patterns in a real room thro
 adb shell am start -n com.arhomedecor.app/.MainActivity
 ```
 
+## Materials and models
+
+- Filament materials are written in `app/src/main/materials/*.mat` and compiled into
+  `app/src/main/assets/materials/*.filamat` by `./tools/compile-materials.sh`. The script downloads
+  `matc` from the official Filament release matching the app's Filament version and verifies its
+  checksum. Re-run it after editing a material or changing the Filament version.
+- The 50 cm reference cube used for scale checks is generated with
+  `python3 tools/make_reference_cube.py 0.5 app/src/main/assets/models/reference_cube_50cm.glb`.
+
 ## Project layout
 
 | Path | Contents |
 |---|---|
-| `app/` | Android app (Kotlin, Jetpack Compose, ARCore) |
+| `app/` | Android app (Kotlin, Jetpack Compose, ARCore, Filament) |
+| `app/src/main/materials/` | Filament material sources |
 | `gradle/libs.versions.toml` | Dependency versions |
 | `tools/` | Development helper scripts |

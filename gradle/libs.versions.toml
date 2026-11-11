@@ -6,6 +6,8 @@ activityCompose = "1.13.0"
 coreKtx = "1.19.1"
 lifecycle = "2.11.0"
 arcore = "1.57.0"
+# Materials in app/src/main/materials must be recompiled (tools/compile-materials.sh) when this changes.
+filament = "1.77.3"
 junit = "4.13.2"
 
 [libraries]
@@ -18,6 +20,8 @@ androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 arcore = { group = "com.google.ar", name = "core", version.ref = "arcore" }
+filament-android = { group = "com.google.android.filament", name = "filament-android", version.ref = "filament" }
+filament-gltfio = { group = "com.google.android.filament", name = "gltfio-android", version.ref = "filament" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
