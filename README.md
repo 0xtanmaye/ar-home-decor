@@ -18,6 +18,22 @@ Android app for previewing furniture and wall paint/patterns in a real room thro
 screen for review (the recorder also produces timestamped contact sheets with ffmpeg). Both only
 capture while this app is in the foreground.
 
+## Recording and replaying AR sessions
+
+Debug builds show a **Record session** button in the AR view. It uses ARCore's Recording & Playback
+API to save the camera images, motion sensor data and the user's taps to an MP4 in the app's private
+storage. Replaying a recording runs ARCore on that data instead of the live camera, so a problem
+seen once can be reproduced, and a fix compared with the behaviour before it, without walking the
+room again. ARCore recomputes tracking, planes and depth on each replay, so runs are close but not
+identical.
+
+- `./tools/pull-recordings.sh` copies recordings to `recordings/` (ignored by git: they show real rooms).
+- `./tools/play-recording.sh [--depth-debug] <recording.mp4> [seconds dir [fps]]` restarts the app,
+  replays the recording and optionally records the screen while it plays. The phone must be unlocked.
+  `--depth-debug` colours planes by the depth check instead of drawing grids: green = the real
+  surface is the plane, red = something in front of it, blue = behind it, yellow = at the plane's
+  distance but facing another way.
+
 ## Build and run
 
 ```bash

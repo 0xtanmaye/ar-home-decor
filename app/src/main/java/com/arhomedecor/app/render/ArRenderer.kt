@@ -129,6 +129,9 @@ class ArRenderer(
         uiHelper.attachTo(surfaceView)
     }
 
+    /** Development aid: colour planes by the depth check's result instead of drawing grids. */
+    fun setDepthDebugView(enabled: Boolean) = planeRenderer.setDebugView(enabled)
+
     fun attachSession(session: Session) {
         cameraBackground.attachTo(session)
     }
@@ -148,10 +151,10 @@ class ArRenderer(
 
         cameraBackground.update(frame)
         depth.update(frame)
-        planeRenderer.setDepthInputs(depth.texture, cameraBackground.ndcToUv, depth.available)
-
         val arCamera = frame.camera
         arCamera.getProjectionMatrix(projection, 0, NEAR_METRES, FAR_METRES)
+        planeRenderer.setDepthInputs(depth.texture, cameraBackground.ndcToUv, projection, depth.available)
+
         for (i in 0 until 16) projectionDouble[i] = projection[i].toDouble()
         camera.setCustomProjection(projectionDouble, NEAR_METRES.toDouble(), FAR_METRES.toDouble())
         if (arCamera.trackingState == TrackingState.TRACKING) {

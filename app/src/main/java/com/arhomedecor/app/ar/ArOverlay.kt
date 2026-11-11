@@ -39,6 +39,7 @@ fun ArOverlay(
     cubeEdgeCentimetres: Int,
     onModeChange: (PlacementMode) -> Unit,
     onClearWalls: () -> Unit,
+    onToggleRecording: () -> Unit,
 ) {
     Box(
         Modifier
@@ -68,6 +69,7 @@ fun ArOverlay(
                 "Cube",
                 status.cubeDistanceMetres?.let { String.format(Locale.US, "%.2f m away", it) } ?: "not placed",
             )
+            if (status.devTools) DebugLine("Session", sessionLabel(status))
         }
 
         Column(
@@ -79,15 +81,11 @@ fun ArOverlay(
                 ModeChip("Place cube", status.mode == PlacementMode.CUBE) { onModeChange(PlacementMode.CUBE) }
                 ModeChip("Mark wall", status.mode == PlacementMode.WALL) { onModeChange(PlacementMode.WALL) }
                 if (status.markedWalls > 0 || status.wallStartPlaced) {
-                    AssistChip(
-                        onClick = onClearWalls,
-                        label = { Text("Clear walls") },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = PanelBackground,
-                            labelColor = Color.White,
-                        ),
-                    )
+                    ActionChip("Clear walls", onClearWalls)
                 }
+            }
+            if (status.devTools && status.playback == null) {
+                ActionChip(if (status.recordingSeconds == null) "Record session" else "Stop recording", onToggleRecording)
             }
             Text(
                 text = hintFor(status, cubeEdgeCentimetres),
@@ -100,6 +98,18 @@ fun ArOverlay(
             )
         }
     }
+}
+
+@Composable
+private fun ActionChip(label: String, onClick: () -> Unit) {
+    AssistChip(
+        onClick = onClick,
+        label = { Text(label) },
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = PanelBackground,
+            labelColor = Color.White,
+        ),
+    )
 }
 
 @Composable

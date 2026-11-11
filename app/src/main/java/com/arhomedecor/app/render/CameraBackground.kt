@@ -156,3 +156,15 @@ internal fun ndcToUvAffine(cornerUvs: FloatArray): FloatArray {
     val e = (v01 - v00) / 2f
     return floatArrayOf(a, b, u00 + a + b, d, e, v00 + d + e)
 }
+
+/**
+ * Inverse of an affine map in the form returned by [ndcToUvAffine]: given u = a*x + b*y + c and
+ * v = d*x + e*y + f, returns the coefficients of x and y in terms of (u, v), in the same order.
+ * The map from screen to camera image is never degenerate, so the inverse always exists.
+ */
+internal fun invertAffine2d(m: FloatArray): FloatArray {
+    val (a, b, c) = Triple(m[0], m[1], m[2])
+    val (d, e, f) = Triple(m[3], m[4], m[5])
+    val det = a * e - b * d
+    return floatArrayOf(e / det, -b / det, (b * f - e * c) / det, -d / det, a / det, (d * c - a * f) / det)
+}

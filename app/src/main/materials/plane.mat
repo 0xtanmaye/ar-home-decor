@@ -23,25 +23,58 @@ material {
         },
         {
             // 1 to also hide grid where the real surface is behind the plane (overhang past a
-            // table edge). 0 for floors and ceilings: nothing real is behind them, so a farther
-            // reading there is a reflection or noise.
+            // table edge). 0 for floors and ceilings: inside their detected outline nothing real
+            // is behind them, so a farther reading there is a reflection (glossy tiles) or noise.
+            // In the enlarged margin beyond the outline (uv1.y = 1) the check always applies:
+            // there the surface was only assumed to continue.
             type : float,
             name : hideWhenFarther
         },
         {
-            // Depth mismatch (metres, at zero distance) still treated as the same surface.
-            // Larger for walls so shallow steps, skirting boards and switches don't cut them.
+            // Distance from the plane (metres) within which the real surface still counts as
+            // the plane itself, before allowing for depth noise. Larger for walls: plain walls
+            // give poor depth, and skirting boards and switches shouldn't cut them.
             type : float,
             name : baseTolerance
         },
         {
-            // Affine map from screen NDC (x, y, 1) to depth-image UV.
+            // Cosine of the largest angle between the real surface (from depth) and the plane
+            // at which they still count as the same surface; 0 turns the check off. Stops a
+            // surface that merely passes through the plane, such as a wall at table height,
+            // from counting as the plane.
+            type : float,
+            name : minNormalAgreement
+        },
+        {
+            // 1 to colour each pixel by the depth check instead of drawing the grid
+            // (development aid): green = on the plane, red = in front of it, blue = behind it,
+            // yellow = at the plane's distance but facing another way.
+            type : float,
+            name : debugView
+        },
+        {
+            // Affine map from screen NDC (x, y, 1) to depth-image UV...
             type : float3,
             name : uvFromNdcU
         },
         {
             type : float3,
             name : uvFromNdcV
+        },
+        {
+            // ...and back, from (u, v, 1) to NDC.
+            type : float3,
+            name : ndcFromUvX
+        },
+        {
+            type : float3,
+            name : ndcFromUvY
+        },
+        {
+            // The camera projection's (P[0][0], P[1][1], P[2][0], P[2][1]): turns NDC into a
+            // view-space ray.
+            type : float4,
+            name : projectionScaleOffset
         }
     ],
     requires : [
@@ -57,30 +90,87 @@ material {
 }
 
 fragment {
-    // How well the real surface (from the depth image) agrees with this plane at this pixel:
-    // 1 where they match, fading to 0 where the real surface is clearly nearer (something is in
-    // front of the plane) or, if enabled, clearly farther (the plane overhangs a real edge).
-    float depthAgreement() {
+    // Depth error, per metre of distance, assumed when deciding whether the real surface is on
+    // a plane.
+    #define DEPTH_NOISE_PER_METRE 0.02
+
+    // The real surface's orientation is measured between depth pixels this far apart on each
+    // side of the one under the fragment. ARCore's depth is smooth, so a small span is enough.
+    #define NORMAL_SPAN_PIXELS 2.0
+
+    // Width of the fade below minNormalAgreement, as a cosine.
+    #define NORMAL_FADE 0.1
+
+    // View-space position of the real surface at depth-image coordinate uv.
+    highp vec3 realPointAt(highp vec2 uv) {
+        highp float depth = textureLod(materialParams_depthTexture, uv, 0.0).r;
+        highp vec3 uvw = vec3(uv, 1.0);
+        highp vec2 ndc = vec2(dot(materialParams.ndcFromUvX, uvw), dot(materialParams.ndcFromUvY, uvw));
+        highp vec4 p = materialParams.projectionScaleOffset;
+        // Depth images hold distance along the camera axis (-z in view space), so the point is
+        // the ray with z = -1 scaled by the depth.
+        return vec3((ndc.x + p.z) / p.x, (ndc.y + p.w) / p.y, -1.0) * depth;
+    }
+
+    // |cos| of the angle between the real surface's normal at uv and the plane's normal.
+    highp float normalAgreement(highp vec2 uv, highp vec3 planeNormal) {
+        highp vec2 span = NORMAL_SPAN_PIXELS / vec2(textureSize(materialParams_depthTexture, 0));
+        highp vec3 alongU = realPointAt(uv + vec2(span.x, 0.0)) - realPointAt(uv - vec2(span.x, 0.0));
+        highp vec3 alongV = realPointAt(uv + vec2(0.0, span.y)) - realPointAt(uv - vec2(0.0, span.y));
+        highp vec3 normal = cross(alongU, alongV);
+        highp float length2 = dot(normal, normal);
+        if (length2 < 1e-12) {
+            return 1.0;
+        }
+        return abs(dot(normal, planeNormal)) * inversesqrt(length2);
+    }
+
+    // How much of this plane pixel to draw, given the real surface seen through it:
+    // 1 where the real surface is the plane, fading to 0 where it is clearly in front of the
+    // plane (something covers it), clearly behind it (the plane overhangs a real edge; ignored
+    // for floors inside their detected outline, see hideWhenFarther), or at the plane's distance
+    // but facing another way. debugColor receives the debug view's colour.
+    float depthVisibility(float margin, out vec3 debugColor) {
+        debugColor = vec3(0.0, 1.0, 0.0);
+        highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
+        // The plane's normal from how the position changes across the screen (exact for a
+        // flat polygon). Screen-space derivatives must be taken before any branching.
+        highp vec3 planeNormal = normalize(cross(dFdx(viewPosition), dFdy(viewPosition)));
         highp vec3 ndc = vec3(getNormalizedViewportCoord().xy * 2.0 - 1.0, 1.0);
         highp vec2 depthUv = vec2(dot(materialParams.uvFromNdcU, ndc), dot(materialParams.uvFromNdcV, ndc));
-        highp float realDepth = texture(materialParams_depthTexture, depthUv).r;
+        highp float realDepth = textureLod(materialParams_depthTexture, depthUv, 0.0).r;
         if (realDepth <= 0.0) {
             return 1.0;
         }
-        highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
         highp float planeDepth = -viewPosition.z;
-        // Depth from a single moving camera gets less precise with distance.
-        highp float tolerance = materialParams.baseTolerance + 0.04 * planeDepth;
-        highp float behind = realDepth - planeDepth;
-        if (behind < 0.0) {
-            return 1.0 - smoothstep(tolerance, 2.0 * tolerance, -behind);
+        // The camera's distance to the plane along its normal.
+        highp float cameraToPlane = abs(dot(viewPosition, planeNormal));
+        // The real point lies on the same ray at realDepth / planeDepth of the plane point's
+        // distance, so its distance from the plane shrinks in the same proportion. Positive is
+        // in front of the plane (towards the camera).
+        highp float offset = (1.0 - realDepth / planeDepth) * cameraToPlane;
+        // Depth noise grows with distance and lies along the ray; only its component along the
+        // normal moves the point off the plane (little of it when the plane is seen edge-on).
+        highp float alongNormal = cameraToPlane / length(viewPosition);
+        highp float tolerance = materialParams.baseTolerance + DEPTH_NOISE_PER_METRE * planeDepth * alongNormal;
+
+        highp float t = clamp(offset / (2.0 * tolerance), -1.0, 1.0);
+        debugColor = vec3(max(t, 0.0), 1.0 - abs(t), max(-t, 0.0));
+
+        float behindWeight = offset < 0.0 ? max(materialParams.hideWhenFarther, margin) : 1.0;
+        if (behindWeight == 0.0) {
+            return 1.0; // a reflection in the floor, or noise
         }
-        if (materialParams.hideWhenFarther < 0.5) {
-            return 1.0;
+        float visibility = 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(offset));
+        if (visibility > 0.0 && materialParams.minNormalAgreement > 0.0) {
+            float facing = smoothstep(
+                materialParams.minNormalAgreement - NORMAL_FADE,
+                materialParams.minNormalAgreement,
+                normalAgreement(depthUv, planeNormal));
+            debugColor = mix(vec3(1.0, 1.0, 0.0), debugColor, facing);
+            visibility *= facing;
         }
-        // Overhangs are large (a table edge over the floor), so a looser test avoids hiding
-        // grid because of depth noise.
-        return 1.0 - smoothstep(2.0 * tolerance, 4.0 * tolerance, behind);
+        return mix(1.0, visibility, behindWeight);
     }
 
     void material(inout MaterialInputs material) {
@@ -91,9 +181,17 @@ fragment {
         float line = 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
 
         vec4 color = materialParams.color;
-        // uv1.x fades from 0 on ARCore's outline to 1 a short distance inside it.
+        // uv1.x fades from 0 on the drawn outline to 1 a short distance inside it; uv1.y is 1 in
+        // the margin drawn beyond ARCore's outline, falling to 0 at that outline.
         float edge = getUV1().x;
-        float visibility = materialParams.depthEnabled > 0.5 ? depthAgreement() : 1.0;
+        float margin = getUV1().y;
+        vec3 debugColor = vec3(0.0, 1.0, 0.0);
+        float visibility = materialParams.depthEnabled > 0.5 ? depthVisibility(margin, debugColor) : 1.0;
+        if (materialParams.debugView > 0.5) {
+            float debugAlpha = 0.6 * edge;
+            material.baseColor = vec4(debugColor * debugAlpha, debugAlpha);
+            return;
+        }
         float alpha = mix(color.a, min(color.a * 3.0, 0.9), line) * edge * visibility;
         // Transparent blending in Filament expects premultiplied alpha.
         material.baseColor = vec4(color.rgb * alpha, alpha);

@@ -14,7 +14,7 @@ How to run the AR view so that results are reliable and repeatable.
 1. Open the app → **Start AR**. Wait until the panel shows `Tracking  tracking`.
 2. Hold the phone at chest height, pointing about 45° down at the floor 1–2 m ahead.
 3. **Move the phone sideways** slowly for 5–10 seconds: take a step, or sweep your arm. Turning on the spot isn't enough. ARCore judges distance from how the view shifts as the camera moves.
-4. Grid colours: **cyan** = floor, **amber** = tables/beds, **pink** = walls, **grey** = ceilings.
+4. Grid colours: **cyan** = floor, **amber** = tables/beds, **pink** = walls, **grey** = ceilings. The sides and fronts of beds, desks and cabinets are not shown (see *Known limitations*).
 5. **Walls:** stand 1–2 m away and sweep sideways along the wall, keeping edges, corners, switches or frames in view. Plain walls with no texture may not be detected; this is a known limitation of plane detection.
 
 Avoid: fast movement, covering the camera, pointing only at one blank surface, mirrors and glass, people or pets walking through the view.
@@ -49,6 +49,15 @@ Tip: tap from 1–2 m away, looking at the base of the wall at an angle rather t
 | Wall fit | Gap between marked walls and the real walls measured by depth (+ = in front) | Within ±3 cm |
 | Cube | Distance from the camera to the reference cube | — |
 
+## Reporting a problem with a recording
+
+When something looks wrong, a recording lets it be replayed and examined as often as needed (debug builds only):
+
+1. Tap **Record session** before scanning. The panel's **Session** line counts the time.
+2. Start by pointing at the floor for a few seconds: a replay begins with an empty map, just like a fresh session.
+3. Reproduce the problem and keep it in view for a few seconds. Taps and mode changes are recorded too, so marking walls or placing the cube is fine.
+4. Tap **Stop recording** (leaving the AR screen also stops it). 20–60 seconds per problem is plenty.
+
 ## Accuracy checks
 
 Record every result in `docs/experiments/` with: date, room, lighting, phone, distance, result.
@@ -68,6 +77,9 @@ ARCore sometimes loses its place, for example after fast movement or while point
 
 - **Walls without texture** aren't detected automatically; mark them by hand.
 - **Doors, curtains, switchboards and other flat things on a wall** count as "wall" geometrically (they are flat and vertical). Where ARCore detects them on a marked wall they are hidden, because the marked wall replaces them. Telling them apart from paintable wall needs the segmentation model planned for the wall-paint stage.
+- **Furniture sides:** vertical surfaces whose top meets a table or bed, and any detected vertical surface that ends below 1 m, are treated as the side of furniture and not drawn. A real wall seen only below 1 m appears once more of it is scanned, or can be marked by hand.
+- **Glossy or glass table tops** may show little or no grid: depth sees reflections in them rather than the surface.
+- **Small objects on the floor** (shoes, feet, cables) up to about 5 cm high can still pick up a little floor grid: depth can't separate them from the floor.
 
 ## Common mistakes
 

@@ -10,6 +10,13 @@ class ArStatusTest {
     private val tracking = ArStatus(tracking = TrackingState.TRACKING)
 
     @Test
+    fun sessionLabelShowsRecordingTimeOrPlayback() {
+        assertEquals("live", sessionLabel(tracking))
+        assertEquals("recording 1:05", sessionLabel(tracking.copy(recordingSeconds = 65)))
+        assertEquals("playback rec-1.mp4", sessionLabel(tracking.copy(playback = "rec-1.mp4")))
+    }
+
+    @Test
     fun errorOverridesEverything() {
         val status = tracking.copy(floors = 2, cubeDistanceMetres = 1f, error = "Camera unavailable")
         assertEquals("Camera unavailable", hintFor(status, 50))

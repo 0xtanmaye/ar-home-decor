@@ -1,5 +1,6 @@
 package com.arhomedecor.app.ar
 
+import com.arhomedecor.app.render.invertAffine2d
 import com.arhomedecor.app.render.ndcToUvAffine
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -23,6 +24,19 @@ class DepthMathTest {
         val (cu, cv) = apply(m, 0f, 0f)
         assertEquals(0.5f, cu, 1e-6f)
         assertEquals(0.5f, cv, 1e-6f)
+    }
+
+    @Test
+    fun inverseAffineMapsUvBackToScreen() {
+        val corners = floatArrayOf(1f, 0.9f, 1f, 0.1f, 0f, 0.9f, 0f, 0.1f)
+        val toUv = ndcToUvAffine(corners)
+        val toNdc = invertAffine2d(toUv)
+        for ((x, y) in listOf(-1f to -1f, 0.3f to -0.7f, 1f to 1f)) {
+            val (u, v) = apply(toUv, x, y)
+            val (bx, by) = apply(toNdc, u, v)
+            assertEquals(x, bx, 1e-5f)
+            assertEquals(y, by, 1e-5f)
+        }
     }
 
     @Test

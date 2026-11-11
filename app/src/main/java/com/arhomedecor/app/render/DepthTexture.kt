@@ -44,6 +44,11 @@ class DepthTexture(private val engine: Engine) {
 
     private var lastTimestamp = -1L
 
+    // Timing of new depth images relative to the camera frame they are drawn with, for logging.
+    private var newImages = 0
+    private var lagNanosTotal = 0L
+    private var lagNanosMax = 0L
+
     // Upload buffers are returned here by Filament once it has copied them, so a steady
     // stream of depth images doesn't keep allocating native memory.
     private val freeBuffers = ConcurrentLinkedQueue<ShortBuffer>()
@@ -61,6 +66,10 @@ class DepthTexture(private val engine: Engine) {
         image.use {
             if (it.timestamp == lastTimestamp) return false
             lastTimestamp = it.timestamp
+            val lag = frame.timestamp - it.timestamp
+            newImages++
+            lagNanosTotal += lag
+            lagNanosMax = maxOf(lagNanosMax, lag)
 
             if (it.width != width || it.height != height) resize(it.width, it.height)
             val plane = it.planes[0]
@@ -89,6 +98,24 @@ class DepthTexture(private val engine: Engine) {
         )
         available = true
         return true
+    }
+
+    /**
+     * "depthImages=N depthLagMs=avg/max" since the last call: how many new depth images arrived,
+     * and how much older than the camera frame shown with them they were.
+     */
+    fun takeTimingSummary(): String {
+        val summary = String.format(
+            java.util.Locale.US,
+            "depthImages=%d depthLagMs=%.1f/%.1f",
+            newImages,
+            if (newImages > 0) lagNanosTotal / 1e6 / newImages else 0.0,
+            lagNanosMax / 1e6,
+        )
+        newImages = 0
+        lagNanosTotal = 0L
+        lagNanosMax = 0L
+        return summary
     }
 
     /** Depth in metres at camera-texture UV ([u], [v] in 0..1), or 0 if unknown. */

@@ -24,3 +24,6 @@ captures/
 
 # OS
 .DS_Store
+
+# ARCore session recordings: video of real rooms, kept out of the repository
+recordings/

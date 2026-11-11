@@ -49,13 +49,27 @@ data class ArStatus(
      * the camera sees an already-scanned area.
      */
     val mapOnHold: Boolean = false,
+    /** Debuggable build: offer session recording. */
+    val devTools: Boolean = false,
+    /** Seconds recorded so far, or null when not recording. */
+    val recordingSeconds: Int? = null,
+    /** Name of the recording being played back instead of the camera, or null when live. */
+    val playback: String? = null,
 )
 
 const val MAP_ON_HOLD_HINT =
     "Lost track of part of the room. Point the camera back at an area you've already scanned to restore it."
 
 const val MAP_RESET_NOTICE = "Tracking was reset, so detected surfaces were cleared. Scan the floor again."
+const val PLAYBACK_FINISHED_NOTICE = "Playback finished."
 const val WALL_TAPS_TOO_CLOSE_NOTICE = "Those points are too close together. Tap further along the wall."
+
+/** "live", "recording 1:05" or "playback rec-….mp4". */
+fun sessionLabel(status: ArStatus): String {
+    status.playback?.let { return "playback $it" }
+    val seconds = status.recordingSeconds ?: return "live"
+    return String.format(Locale.US, "recording %d:%02d", seconds / 60, seconds % 60)
+}
 
 fun trackingLabel(status: ArStatus): String = when (status.tracking) {
     TrackingState.TRACKING -> "tracking"

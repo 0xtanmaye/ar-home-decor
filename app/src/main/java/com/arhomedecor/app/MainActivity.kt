@@ -2,6 +2,7 @@ package com.arhomedecor.app
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.arhomedecor.app.ar.ArActivity
+import com.arhomedecor.app.ar.EXTRA_PLAYBACK
 import com.arhomedecor.app.device.AppMode
 import com.arhomedecor.app.device.DepthSupport
 import com.arhomedecor.app.device.DeviceCapabilities
@@ -35,6 +37,15 @@ import com.arhomedecor.app.device.DeviceCapabilityChecker
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Development: `adb shell am start ... --es playback <file>` replays a recorded session
+        // (see tools/play-recording.sh). Only debuggable builds accept it.
+        val playback = intent.getStringExtra(EXTRA_PLAYBACK)
+        if (playback != null && applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            // Passes the other development extras (e.g. the depth debug view) along too.
+            startActivity(Intent(this, ArActivity::class.java).putExtras(intent))
+            finish()
+            return
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme {

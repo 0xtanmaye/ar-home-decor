@@ -2,6 +2,7 @@ package com.arhomedecor.app.ar
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -48,6 +49,12 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+/** Intent extra (debuggable builds only): file name of a recording to play back instead of the camera. */
+const val EXTRA_PLAYBACK = "playback"
+
+/** Intent extra (debuggable builds only): true to show the depth check's debug colours. */
+const val EXTRA_DEPTH_DEBUG = "depthDebug"
+
 /**
  * Live AR view: camera feed, detected floors/walls, and a reference cube placed by tapping
  * the floor. Everything per-frame runs on the main thread in a Choreographer callback.
@@ -62,7 +69,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private var viewportWidth = 0
     private var viewportHeight = 0
 
-    private val pendingTaps = ArrayDeque<MotionEvent>()
+    /** User actions waiting for the next frame (see [UserAction]). */
+    private val pendingActions = ArrayDeque<UserAction>()
     private var mode = PlacementMode.CUBE
     private var cubeAnchor: Anchor? = null
     private val walls = ArrayList<ManualWall>()
@@ -91,6 +99,15 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private var lastLogNanos = 0L
     private val status = MutableStateFlow(ArStatus())
 
+    /** Recording and playback are development tools, offered only in debuggable builds. */
+    private val devTools by lazy { applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 }
+    private val recorder by lazy { SessionRecorder(java.io.File(filesDir, RECORDINGS_DIR)) }
+    /** Recording to play back instead of the camera, from the launching intent. */
+    private var playbackRequest: String? = null
+    private var recordingStartNanos = 0L
+    private var recordModeOnNextFrame = false
+    private var playbackEndLogged = false
+
     private val choreographer: Choreographer = Choreographer.getInstance()
 
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -115,7 +132,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDown(e: MotionEvent) = true
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
-                    pendingTaps.addLast(MotionEvent.obtain(e))
+                    if (viewportWidth > 0 && viewportHeight > 0) {
+                        enqueue(UserAction.Tap(e.x / viewportWidth, e.y / viewportHeight))
+                    }
                     return true
                 }
             },
@@ -126,7 +145,13 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             setContent {
                 MaterialTheme {
                     val current by status.collectAsState()
-                    ArOverlay(current, CUBE_EDGE_CENTIMETRES, ::setMode, ::clearWalls)
+                    ArOverlay(
+                        current,
+                        CUBE_EDGE_CENTIMETRES,
+                        onModeChange = { enqueue(UserAction.SetMode(it)) },
+                        onClearWalls = { enqueue(UserAction.ClearWalls) },
+                        onToggleRecording = ::toggleRecording,
+                    )
                 }
             }
         }
@@ -137,6 +162,11 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             },
         )
 
+        if (devTools) {
+            playbackRequest = intent.getStringExtra(EXTRA_PLAYBACK)
+            renderer.setDepthDebugView(intent.getBooleanExtra(EXTRA_DEPTH_DEBUG, false))
+            status.update { it.copy(devTools = true, playback = playbackRequest) }
+        }
         if (!DeviceCapabilityChecker.hasCameraPermission(this)) {
             cameraPermission.launch(Manifest.permission.CAMERA)
         }
@@ -146,6 +176,17 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         super.onResume()
         if (!DeviceCapabilityChecker.hasCameraPermission(this)) return
         val activeSession = session ?: createSession() ?: return
+        playbackRequest?.let { name ->
+            // Only before the session's first resume; afterwards the playback just continues.
+            playbackRequest = null
+            if (!recorder.startPlayback(activeSession, name)) {
+                showError("Could not play back $name.")
+                return
+            }
+            // Switching the session to a dataset drops its camera textures and display geometry.
+            renderer.attachSession(activeSession)
+            applyDisplayGeometry()
+        }
         try {
             activeSession.resume()
         } catch (e: CameraNotAvailableException) {
@@ -162,12 +203,13 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         running = false
         choreographer.removeFrameCallback(this)
         session?.pause()
+        session?.let(recorder::checkRecording) // pausing ends a recording
+        status.update { it.copy(recordingSeconds = null) }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        pendingTaps.forEach(MotionEvent::recycle)
-        pendingTaps.clear()
+        pendingActions.clear()
         cubeAnchor?.detach()
         cubeAnchor = null
         clearWalls()
@@ -253,7 +295,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
 
         lastFrameNanos = frameTimeNanos
         val camera = frame.camera
-        handleTaps(activeSession, frame, camera)
+        handleActions(activeSession, frame, camera)
         val content = ArRenderer.Content(
             referenceCubePose = cubeAnchor?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose,
             wallMarkerPose = wallStartAnchor?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose,
@@ -261,6 +303,11 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         )
         renderer.render(activeSession, frame, frameTimeNanos, content)
         logTrackingEvents(camera, frameTimeNanos)
+        if (!playbackEndLogged && recorder.playbackEnded(activeSession)) {
+            playbackEndLogged = true
+            Log.i(EVENT_TAG, "playback finished: ${recorder.playbackName}")
+            showNotice(PLAYBACK_FINISHED_NOTICE)
+        }
 
         fpsCounter.onFrame(frameTimeNanos)
         publishStatus(frame, camera, frameTimeNanos)
@@ -271,23 +318,54 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         framesTimed++
     }
 
-    private fun handleTaps(session: Session, frame: Frame, camera: Camera) {
-        while (true) {
-            val tap = pendingTaps.removeFirstOrNull() ?: return
-            try {
-                if (camera.trackingState != TrackingState.TRACKING) continue
-                when (mode) {
-                    PlacementMode.CUBE -> placeCube(frame, tap)
-                    PlacementMode.WALL -> markWallPoint(session, frame, camera, tap)
+    /** Live input is ignored while playing back: the recording's own actions are replayed. */
+    private fun enqueue(action: UserAction) {
+        if (!recorder.isPlayingBack) pendingActions.addLast(action)
+    }
+
+    private fun handleActions(session: Session, frame: Frame, camera: Camera) {
+        recorder.checkRecording(session)
+        val actions = if (recorder.isPlayingBack) {
+            recorder.recordedActions(frame).onEach { Log.i(EVENT_TAG, "replaying $it") }
+        } else {
+            pendingActions.toList().also { pendingActions.clear() }
+        }
+        // Playback starts in the default mode, so a recording first notes the mode it began in.
+        val initialMode = if (recordModeOnNextFrame) listOf(UserAction.SetMode(mode)) else emptyList()
+        recordModeOnNextFrame = false
+        recorder.record(frame, initialMode + actions)
+        for (action in actions) {
+            when (action) {
+                is UserAction.Tap -> if (camera.trackingState == TrackingState.TRACKING) {
+                    val x = action.x * viewportWidth
+                    val y = action.y * viewportHeight
+                    when (mode) {
+                        PlacementMode.CUBE -> placeCube(frame, x, y)
+                        PlacementMode.WALL -> markWallPoint(session, frame, camera, x, y)
+                    }
                 }
-            } finally {
-                tap.recycle()
+                is UserAction.SetMode -> setMode(action.mode)
+                UserAction.ClearWalls -> clearWalls()
             }
         }
     }
 
-    private fun placeCube(frame: Frame, tap: MotionEvent) {
-        val hit = frame.hitTest(tap).firstOrNull(::isHorizontalSurfaceHit) ?: return
+    private fun toggleRecording() {
+        val activeSession = session ?: return
+        if (recorder.recordingName != null) {
+            recorder.stopRecording(activeSession)
+            status.update { it.copy(recordingSeconds = null) }
+        } else if (recorder.startRecording(activeSession)) {
+            recordingStartNanos = lastFrameNanos
+            recordModeOnNextFrame = true
+            status.update { it.copy(recordingSeconds = 0) }
+        } else {
+            showNotice("Could not start recording.")
+        }
+    }
+
+    private fun placeCube(frame: Frame, x: Float, y: Float) {
+        val hit = frame.hitTest(x, y).firstOrNull(::isHorizontalSurfaceHit) ?: return
         cubeAnchor?.detach()
         cubeAnchor = hit.createAnchor()
         Log.i(TAG, String.format(Locale.US, "Placed reference cube %.2f m from camera", hit.distance))
@@ -298,8 +376,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
      * defines the wall's direction. Floor hits outside ARCore's floor outline are accepted: the
      * floor is flat, and its outline often stops short of a plain wall.
      */
-    private fun markWallPoint(session: Session, frame: Frame, camera: Camera, tap: MotionEvent) {
-        val hit = frame.hitTest(tap).firstOrNull(::isFloorLevelHit) ?: return
+    private fun markWallPoint(session: Session, frame: Frame, camera: Camera, x: Float, y: Float) {
+        val hit = frame.hitTest(x, y).firstOrNull(::isFloorLevelHit) ?: return
         val floorY = hit.hitPose.ty()
         val point = hit.hitPose.translation
         val start = wallStartAnchor
@@ -452,6 +530,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 wallFitInliers = wallProbeResult?.inlierFraction,
                 notice = notice?.takeIf { frameTimeNanos - noticeNanos < NOTICE_DURATION_NANOS },
                 mapOnHold = mapOnHold,
+                recordingSeconds = recorder.recordingName?.let {
+                    ((frameTimeNanos - recordingStartNanos) / 1_000_000_000L).toInt()
+                },
             )
         }
 
@@ -463,7 +544,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             Log.i(
                 STATS_TAG,
                 "fps=${s.fps} tracking=${s.tracking} reason=${s.failureReason} floors=${s.floors} " +
-                    "raised=[$raised] walls=${s.walls} ceilings=${counts.ceilings} " +
+                    "raised=[$raised] walls=${s.walls} furnitureSides=${counts.furnitureSides} ceilings=${counts.ceilings} " +
                     "cameraHeight=${s.cameraHeightMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
                     "depth=${renderer.depth.width}x${renderer.depth.height} " +
                     "floorFit=${probe?.let { String.format(Locale.US, "%+.3f", it.offsetMetres) } ?: "none"} " +
@@ -478,6 +559,12 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     "cube=${s.cubeDistanceMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
                     "cpuMsAvg=${String.format(Locale.US, "%.1f", frameCpuNanosTotal / 1e6 / maxOf(framesTimed, 1))} " +
                     "cpuMsMax=${String.format(Locale.US, "%.1f", frameCpuNanosMax / 1e6)} " +
+                    "${renderer.depth.takeTimingSummary()} " +
+                    "session=${when {
+                        recorder.isPlayingBack -> "playback:${recorder.playbackName}"
+                        recorder.recordingName != null -> "recording:${recorder.recordingName}"
+                        else -> "live"
+                    }} " +
                     "frameTs=${frame.timestamp}",
             )
             frameCpuNanosTotal = 0L
@@ -498,6 +585,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         const val NOTICE_DURATION_NANOS = 5_000_000_000L
         const val LOG_INTERVAL_NANOS = 1_000_000_000L
         const val DEFAULT_WALL_HEIGHT_METRES = 2.8f
+        const val RECORDINGS_DIR = "recordings"
 
         /** A single paused plane can be a passing glitch; several mean the map is on hold. */
         const val MIN_PAUSED_PLANES_FOR_HOLD = 3
