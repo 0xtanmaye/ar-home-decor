@@ -63,8 +63,8 @@ class ArRenderer(
     /** Measured (raw) depth points, which build up where each surface really extends. */
     private val rawDepth = RawDepthPoints()
 
-    /** "rawDepthImages=N rawDepthKept=P%" since the last call, for the stats log. */
-    fun takeRawDepthSummary(): String = rawDepth.takeSummary()
+    /** Raw depth and coverage figures since the last call, for the stats log. */
+    fun takeRawDepthSummary(): String = "${rawDepth.takeSummary()} ${planeRenderer.takeCoverageSummary()}"
 
     private val modelLoader = ModelLoader(engine)
     private val referenceCube = PlacedModel(modelLoader.loadGlb(context, REFERENCE_CUBE_ASSET))
@@ -85,6 +85,12 @@ class ArRenderer(
 
     /** How a tracked ARCore plane was classified in the last frame (null if not drawn). */
     fun planeKind(plane: Plane): PlaneKind? = planeRenderer.kindOf(plane)
+
+    /**
+     * Whether a floor or raised surface is drawn at [pose] beyond ARCore's outline of [plane],
+     * because measured depth confirmed it there.
+     */
+    fun isConfirmedSurfaceAt(plane: Plane, pose: Pose): Boolean = planeRenderer.isConfirmedAt(plane, pose.tx(), pose.tz())
 
     /** World-space height of the ceiling, or null if none has been detected. */
     val ceilingY: Float? get() = planeRenderer.ceilingY

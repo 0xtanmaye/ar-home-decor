@@ -53,6 +53,28 @@ class SurfaceCoverageTest {
     }
 
     @Test
+    fun steepPointsDoNotConfirm() {
+        // A wall crossing the desk's height at x = 0.5 is at the right height, but not a top.
+        val coverage = SurfaceCoverage()
+        repeat(5) {
+            coverage.observe(onDesk, 1, camera, surfaceY = 0f, countsAgainst = true, steep = booleanArrayOf(true))
+        }
+        assertEquals(0, coverage.version)
+        // Not known to be steep (a top, or too sparse to tell): confirms.
+        coverage.observe(onDesk, 1, camera, surfaceY = 0f, countsAgainst = true, steep = booleanArrayOf(false))
+        assertEquals(coverageValue(seen = 1, seenThrough = 0), coverage.valueAt(0.5f, 0.01f), 0f)
+    }
+
+    @Test
+    fun orientationDoesNotAffectSeeingThrough() {
+        val coverage = SurfaceCoverage()
+        repeat(COVERAGE_MIN_REFUTING_FRAMES) {
+            coverage.observe(pastDesk, 1, camera, surfaceY = 0f, countsAgainst = true, steep = booleanArrayOf(true))
+        }
+        assertEquals(0f, coverage.valueAt(0.5f, 0.02f), 0f)
+    }
+
+    @Test
     fun pointsAboveTheSurfaceSayNothing() {
         // Something standing on the desk neither confirms nor refutes it.
         val coverage = SurfaceCoverage()

@@ -38,6 +38,13 @@ internal const val COVERAGE_TOLERANCE_PER_METRE = 0.01f
  * ever seen), 0.5 = no clear evidence either way, rising to 1 as more frames saw the surface
  * there than saw through it.
  */
+/**
+ * From this [coverageValue] on (measured in two more frames than seen through), a cell beyond
+ * ARCore's outline is drawn clearly (plane.mat fades confirmed cells in between 0.6 and 0.85),
+ * so a tap there counts as a tap on the surface.
+ */
+internal const val COVERAGE_DRAWN_VALUE = 0.75f
+
 internal fun coverageValue(seen: Int, seenThrough: Int): Float = when {
     seenThrough >= COVERAGE_MIN_REFUTING_FRAMES && seenThrough >= COVERAGE_REFUTING_RATIO * seen -> 0f
     seen > seenThrough -> 0.5f + 0.5f * minOf(1f, seen.toFloat() / COVERAGE_CONFIRMING_FRAMES)
@@ -66,19 +73,37 @@ class SurfaceCoverage {
     var version = 0
         private set
 
+    /** For diagnostics: points at the surface's height in the last [observe], and how many of them were steep. */
+    var lastPointsAtHeight = 0
+        private set
+    var lastSteepAtHeight = 0
+        private set
+
     /**
      * Adds one frame of measurements: [count] world points in [points] (x, y, z triples) seen
      * from [camera] (x, y, z), against a surface at height [surfaceY].
      *
-     * A point at the surface's height votes for the cell it lies in. If [countsAgainst], a point
-     * clearly below it votes against the cell where its line of sight crossed the surface's
-     * height: the camera saw through the surface there. Each cell then counts one frame for the
-     * side with more votes, so a burst of noisy pixels counts no more than a single one.
+     * A point at the surface's height votes for the cell it lies in, unless [steep] marks it as
+     * lying on a steep surface: a wall or the side of a cabinet passes through a table's height
+     * too, and would otherwise confirm the table along it. If
+     * [countsAgainst], a point clearly below the surface votes against the cell where its line of
+     * sight crossed the surface's height: the camera saw through the surface there. Each cell
+     * then counts one frame for the side with more votes, so a burst of noisy pixels counts no
+     * more than a single one.
      */
-    fun observe(points: FloatArray, count: Int, camera: FloatArray, surfaceY: Float, countsAgainst: Boolean) {
+    fun observe(
+        points: FloatArray,
+        count: Int,
+        camera: FloatArray,
+        surfaceY: Float,
+        countsAgainst: Boolean,
+        steep: BooleanArray? = null,
+    ) {
         val cameraAbove = camera[1] - surfaceY
         if (cameraAbove <= 0f) return // seen from below: not a surface to put things on
         frameVotes.clear()
+        lastPointsAtHeight = 0
+        lastSteepAtHeight = 0
         for (i in 0 until count) {
             val x = points[i * 3]
             val y = points[i * 3 + 1]
@@ -89,7 +114,8 @@ class SurfaceCoverage {
             val tolerance = COVERAGE_TOLERANCE_METRES + COVERAGE_TOLERANCE_PER_METRE * sqrt(dx * dx + dy * dy + dz * dz)
             val height = y - surfaceY
             if (abs(height) <= tolerance) {
-                vote(cellKey(x, z), 1)
+                lastPointsAtHeight++
+                if (steep == null || !steep[i]) vote(cellKey(x, z), 1) else lastSteepAtHeight++
             } else if (countsAgainst && height < -tolerance) {
                 // Where the line of sight crossed the surface's height on its way down to the point.
                 val t = cameraAbove / (camera[1] - y)
@@ -173,11 +199,19 @@ internal fun depthPixelToWorld(
     out: FloatArray,
     offset: Int,
 ) {
-    val x = (u + 0.5f - intrinsics[2]) * depth / intrinsics[0]
-    val y = -(v + 0.5f - intrinsics[3]) * depth / intrinsics[1]
-    val z = -depth
+    depthPixelToCamera(u, v, depth, intrinsics, out, offset)
+    val x = out[offset]
+    val y = out[offset + 1]
+    val z = out[offset + 2]
     val m = cameraToWorld
     out[offset] = m[0] * x + m[4] * y + m[8] * z + m[12]
     out[offset + 1] = m[1] * x + m[5] * y + m[9] * z + m[13]
     out[offset + 2] = m[2] * x + m[6] * y + m[10] * z + m[14]
+}
+
+/** Like [depthPixelToWorld], but in the camera's own frame (+x right, +y up, looking along -z). */
+internal fun depthPixelToCamera(u: Int, v: Int, depth: Float, intrinsics: FloatArray, out: FloatArray, offset: Int) {
+    out[offset] = (u + 0.5f - intrinsics[2]) * depth / intrinsics[0]
+    out[offset + 1] = -(v + 0.5f - intrinsics[3]) * depth / intrinsics[1]
+    out[offset + 2] = -depth
 }

@@ -101,13 +101,14 @@ material {
             name : coverageEnabled
         },
         {
-            // Affine map from the mesh's local (u, v, 1) (uv0) to coverage texture coordinates.
+            // Affine map from grid coordinates (uv0, world (x, z) on floors and raised surfaces)
+            // to coverage texture coordinates, as rows applied to (u, v, 1).
             type : float3,
-            name : coverageFromLocalU
+            name : coverageFromGridU
         },
         {
             type : float3,
-            name : coverageFromLocalV
+            name : coverageFromGridV
         }
     ],
     requires : [
@@ -118,7 +119,8 @@ material {
     blending : transparent,
     culling : none,
     depthWrite : false,
-    // uv0 is plane-local position in metres; keep it as-is.
+    // uv0 is the grid position in metres, fixed in the world (see gridFromPlaneLocal in
+    // PlaneRenderer.kt); keep it as-is.
     flipUV : false
 }
 
@@ -135,6 +137,11 @@ fragment {
     // Width of the fade below minNormalAgreement, as a cosine.
     #define NORMAL_FADE 0.1
 
+    // A neighbouring depth sample whose depth differs from the centre's by more than this
+    // fraction lies across an edge, on another surface (NORMAL_OUTLIER_RATIO in DepthNormals.kt;
+    // the rule ARCore Depth Lab's normal estimate uses).
+    #define NORMAL_OUTLIER_RATIO 0.2
+
     // View-space position of the real surface at depth-image coordinate uv.
     highp vec3 realPointAt(highp vec2 uv) {
         highp float depth = textureLod(materialParams_depthTexture, uv, 0.0).r;
@@ -146,11 +153,33 @@ fragment {
         return vec3((ndc.x + p.z) / p.x, (ndc.y + p.w) / p.y, -1.0) * depth;
     }
 
-    // |cos| of the angle between the real surface's normal at uv and the plane's normal.
+    // The real surface's direction through centre, from the samples before and after it along
+    // one image axis. A sample across an edge (or without depth) is left out, and the one-sided
+    // difference towards the other used, so that the estimate holds up to a surface's edge
+    // instead of mixing in the surface beyond it. Zero if neither is on the same surface.
+    highp vec3 tangentThrough(highp vec3 before, highp vec3 centre, highp vec3 after) {
+        highp float limit = NORMAL_OUTLIER_RATIO * -centre.z;
+        bool beforeOk = before.z < 0.0 && abs(before.z - centre.z) <= limit;
+        bool afterOk = after.z < 0.0 && abs(after.z - centre.z) <= limit;
+        if (beforeOk && afterOk) {
+            return after - before;
+        }
+        if (afterOk) {
+            return after - centre;
+        }
+        if (beforeOk) {
+            return centre - before;
+        }
+        return vec3(0.0);
+    }
+
+    // |cos| of the angle between the real surface's normal at uv and the plane's normal, or 1
+    // where it can't be estimated (then distance alone decides).
     highp float normalAgreement(highp vec2 uv, highp vec3 planeNormal) {
         highp vec2 span = NORMAL_SPAN_PIXELS / vec2(textureSize(materialParams_depthTexture, 0));
-        highp vec3 alongU = realPointAt(uv + vec2(span.x, 0.0)) - realPointAt(uv - vec2(span.x, 0.0));
-        highp vec3 alongV = realPointAt(uv + vec2(0.0, span.y)) - realPointAt(uv - vec2(0.0, span.y));
+        highp vec3 centre = realPointAt(uv);
+        highp vec3 alongU = tangentThrough(realPointAt(uv - vec2(span.x, 0.0)), centre, realPointAt(uv + vec2(span.x, 0.0)));
+        highp vec3 alongV = tangentThrough(realPointAt(uv - vec2(0.0, span.y)), centre, realPointAt(uv + vec2(0.0, span.y)));
         highp vec3 normal = cross(alongU, alongV);
         highp float length2 = dot(normal, normal);
         if (length2 < 1e-12) {
@@ -222,7 +251,8 @@ fragment {
 
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
-        // uv0 holds plane-local coordinates in metres: draw a line every gridSpacing metres.
+        // uv0 holds grid coordinates in metres, fixed in the world: draw a line every
+        // gridSpacing metres.
         vec2 cell = getUV0() / materialParams.gridSpacing;
         vec2 distanceToLine = abs(fract(cell - 0.5) - 0.5) / fwidth(cell);
         float line = 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
@@ -241,8 +271,8 @@ fragment {
             DepthCheck depth = checkDepth();
             debugColor = depth.debugColor;
             if (materialParams.coverageEnabled > 0.5) {
-                highp vec3 local = vec3(getUV0(), 1.0);
-                highp vec2 coverageUv = vec2(dot(materialParams.coverageFromLocalU, local), dot(materialParams.coverageFromLocalV, local));
+                highp vec3 grid = vec3(getUV0(), 1.0);
+                highp vec2 coverageUv = vec2(dot(materialParams.coverageFromGridU, grid), dot(materialParams.coverageFromGridV, grid));
                 float coverage = texture(materialParams_coverageTexture, coverageUv).r;
                 float confirmed = smoothstep(CONFIRMED_FROM, CONFIRMED_AT, coverage);
                 float refuted = 1.0 - smoothstep(REFUTED_AT, REFUTED_FROM, coverage);

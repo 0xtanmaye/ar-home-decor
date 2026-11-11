@@ -137,3 +137,59 @@ class PlaneGeometryTest {
         assertEquals(PlaneKind.FLOOR, classifyUpward(-1.35f, -1.40f, wasFloor = false))
     }
 }
+
+class PlaneGridTest {
+
+    /** Column-major pose: rotation by [degrees] about world y, then translation. */
+    private fun horizontalPose(degrees: Float, tx: Float, ty: Float, tz: Float): FloatArray {
+        val a = Math.toRadians(degrees.toDouble())
+        val c = kotlin.math.cos(a).toFloat()
+        val s = kotlin.math.sin(a).toFloat()
+        return floatArrayOf(c, 0f, -s, 0f, 0f, 1f, 0f, 0f, s, 0f, c, 0f, tx, ty, tz, 1f)
+    }
+
+    private fun localOf(m: FloatArray, x: Float, z: Float): Pair<Float, Float> {
+        // Inverse of a rotation about y plus translation, for a point on the plane.
+        val dx = x - m[12]
+        val dz = z - m[14]
+        return (m[0] * dx + m[2] * dz) to (m[8] * dx + m[10] * dz)
+    }
+
+    private fun gridAt(grid: FloatArray, u: Float, v: Float) =
+        (grid[0] * u + grid[1] * v + grid[2]) to (grid[3] * u + grid[4] * v + grid[5])
+
+    @Test
+    fun horizontalGridIsWorldXz() {
+        val pose = horizontalPose(30f, 1f, 0.7f, -2f)
+        val grid = gridFromPlaneLocal(pose, vertical = false)
+        val (x, z) = gridAt(grid, 0.4f, -0.2f)
+        // World position of local (0.4, 0, -0.2).
+        assertEquals(pose[0] * 0.4f + pose[8] * -0.2f + pose[12], x, 1e-5f)
+        assertEquals(pose[2] * 0.4f + pose[10] * -0.2f + pose[14], z, 1e-5f)
+    }
+
+    @Test
+    fun gridStaysPutWhenArcoreMovesThePlanesCentre() {
+        // The same table top before and after ARCore refines it: its centre shifts and turns.
+        val before = horizontalPose(10f, 1f, 0.7f, -2f)
+        val after = horizontalPose(35f, 1.25f, 0.7f, -1.9f)
+        val (u1, v1) = localOf(before, 1.3f, -2.1f)
+        val (u2, v2) = localOf(after, 1.3f, -2.1f)
+        val g1 = gridAt(gridFromPlaneLocal(before, vertical = false), u1, v1)
+        val g2 = gridAt(gridFromPlaneLocal(after, vertical = false), u2, v2)
+        assertEquals(g1.first, g2.first, 1e-5f)
+        assertEquals(g1.second, g2.second, 1e-5f)
+    }
+
+    @Test
+    fun wallGridRunsAlongTheWallAndUpIt() {
+        // A wall facing +x (local y = normal = world +x), local x = world up, local z = world z.
+        val wall = floatArrayOf(0f, 1f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 0f, 1f, 0f, -2f, 1.3f, 0.5f, 1f)
+        val grid = gridFromPlaneLocal(wall, vertical = true)
+        val (along0, up0) = gridAt(grid, 0f, 0f)
+        val (along1, up1) = gridAt(grid, 0.3f, 0.2f) // 0.3 m up, 0.2 m along world z
+        assertEquals(1.3f, up0, 1e-5f)
+        assertEquals(0.3f, up1 - up0, 1e-5f)
+        assertEquals(0.2f, kotlin.math.abs(along1 - along0), 1e-5f)
+    }
+}

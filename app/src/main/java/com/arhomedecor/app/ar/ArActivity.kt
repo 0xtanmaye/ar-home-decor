@@ -469,10 +469,16 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         }
     }
 
-    /** Floor or table/bed, within its detected outline (the reference cube needs real support). */
+    /**
+     * Floor or table/bed where the surface is known to be (the reference cube needs real
+     * support): within ARCore's outline, or beyond it where measured depth confirmed it, which is
+     * where its grid is drawn too. ARCore also reports hits on a plane beyond its outline, so a
+     * hit past a table's real edge is rejected here and the floor behind it is tried next.
+     */
     private fun isHorizontalSurfaceHit(hit: HitResult): Boolean {
         val plane = hit.trackable as? Plane ?: return false
-        return plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING && plane.isPoseInPolygon(hit.hitPose)
+        if (plane.type != Plane.Type.HORIZONTAL_UPWARD_FACING) return false
+        return plane.isPoseInPolygon(hit.hitPose) || renderer.isConfirmedSurfaceAt(plane, hit.hitPose)
     }
 
     /** Anywhere on a floor plane, even beyond its detected outline. */

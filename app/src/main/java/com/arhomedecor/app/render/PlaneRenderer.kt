@@ -44,8 +44,16 @@ class PlaneRenderer(
         /** Whether the current geometry was sized for depth trimming (see [update]). */
         var builtForDepth = false
         var lastBuildNanos = 0L
-        /** The outline as drawn ((u, v) pairs in the mesh's frame), which coverage must span. */
-        var drawnOutline = FloatArray(0)
+        /**
+         * The ARCore plane's pose when the geometry was built. ARCore's outline is relative to
+         * the plane's centre, which moves (and turns) as ARCore refines the plane, so the
+         * outline is drawn at the pose it came with until the next rebuild.
+         */
+        var builtPose: Pose? = null
+        /** ARCore has refined the plane since the geometry was built. */
+        var outdated = false
+        /** The outline as drawn, in grid coordinates (world x, z for horizontal planes). */
+        var drawnGridOutline = FloatArray(0)
 
         // Coverage map texture (see SurfaceCoverage) and the world rectangle it spans.
         var coverageTexture: Texture? = null
@@ -65,13 +73,40 @@ class PlaneRenderer(
     private var nextPlaneId = 1
     private var hiddenOnWalls: Set<Plane> = emptySet()
 
+    /** Raised surfaces from the last update, to describe vertical planes against in the log. */
+    private var lastRaisedFootprints: List<RaisedFootprint> = emptyList()
+
     /** For each upward plane, the highest the camera has been above it (see [classifyUpward]). */
     private val maxCameraAbove = HashMap<Plane, Float>()
 
     /** Where each floor and raised surface has been confirmed by measured depth. */
     private val coverage = HashMap<Plane, SurfaceCoverage>()
 
+    // For the log: measured points at a raised surface's height, and how many were left out as steep.
+    private var raisedPointsAtHeight = 0L
+    private var raisedSteepAtHeight = 0L
+
+    /** "raisedAtHeight=N raisedSteep=P%" since the last call (see [SurfaceCoverage.observe]). */
+    fun takeCoverageSummary(): String {
+        val share = if (raisedPointsAtHeight > 0) 100.0 * raisedSteepAtHeight / raisedPointsAtHeight else 0.0
+        val summary = String.format(Locale.US, "raisedAtHeight=%d raisedSteep=%.0f%%", raisedPointsAtHeight, share)
+        raisedPointsAtHeight = 0L
+        raisedSteepAtHeight = 0L
+        return summary
+    }
+
     fun kindOf(plane: Plane): PlaneKind? = kinds[plane]
+
+    /**
+     * Whether measured depth has confirmed [plane] (a floor or raised surface) at world (x, z),
+     * so that its grid is drawn there even beyond ARCore's outline.
+     */
+    fun isConfirmedAt(plane: Plane, x: Float, z: Float): Boolean {
+        val kind = kinds[plane]
+        if (kind != PlaneKind.FLOOR && kind != PlaneKind.RAISED_SURFACE) return false
+        val planeCoverage = coverage[plane] ?: return false
+        return planeCoverage.valueAt(x, z) >= COVERAGE_DRAWN_VALUE
+    }
 
     // Inputs shared by every plane's material instance, applied to each one as it is drawn.
     private var depthTexture: Texture? = null
@@ -205,6 +240,7 @@ class PlaneRenderer(
         val raisedFootprints = upward
             .filter { newKinds[it] == PlaneKind.RAISED_SURFACE }
             .map { RaisedFootprint(it.centerPose.ty(), it.worldOutlineXz()) }
+        lastRaisedFootprints = raisedFootprints
         val floorInfo = upward.indices.filter { newKinds[upward[it]] == PlaneKind.FLOOR }.map { upwardInfo[it] }
         for (plane in tracked) {
             when (plane.type) {
@@ -248,6 +284,9 @@ class PlaneRenderer(
         for (plane in tracked) {
             val pose = plane.centerPose
             val kind = newKinds.getValue(plane)
+            // A refinement that arrives too soon after a rebuild, or while the plane is hidden,
+            // waits for the next rebuild rather than being lost (it may be ARCore's last).
+            if (plane in updated) meshes[plane]?.outdated = true
             if (kind == PlaneKind.FURNITURE_SIDE) {
                 furnitureSides++
                 continue // not drawn: hidden by the loop below
@@ -263,7 +302,7 @@ class PlaneRenderer(
                 }
             }
             val mesh = meshes.getOrPut(plane) { createMesh(kind, fullCheckInside = false) }
-            val rebuildDue = plane in updated && nowNanos - mesh.lastBuildNanos >= REBUILD_INTERVAL_NANOS
+            val rebuildDue = mesh.outdated && nowNanos - mesh.lastBuildNanos >= REBUILD_INTERVAL_NANOS
             // With depth, the outline is enlarged by an amount that depends on the kind.
             val kindChangesSize = depthAvailable && mesh.kind != null && mesh.kind != kind
             val needsGeometry = !mesh.hasRenderable || mesh.builtForDepth != depthAvailable || rebuildDue || kindChangesSize
@@ -273,18 +312,23 @@ class PlaneRenderer(
                 val outline = FloatArray(polygon.remaining()) { polygon.get(it) }
                 val dilation = if (depthAvailable) depthExpansionFor(kind) else 0f
                 val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
-                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind)) continue
+                pose.toMatrix(transform, 0)
+                val grid = gridFromPlaneLocal(transform, vertical = plane.type == Plane.Type.VERTICAL)
+                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind, grid)) continue
                 mesh.builtForDepth = depthAvailable
                 mesh.lastBuildNanos = nowNanos
+                mesh.builtPose = pose
+                mesh.outdated = false
             }
+            val builtPose = mesh.builtPose ?: continue
 
             if (kind != mesh.kind) {
                 applyKind(mesh.instance, kind, fullCheckInside = false)
                 mesh.kind = kind
             }
-            show(mesh, pose)
+            show(mesh, builtPose)
             val surfaceCoverage = if (kind == PlaneKind.FLOOR || kind == PlaneKind.RAISED_SURFACE) coverage[plane] else null
-            bindInputs(mesh, pose, surfaceCoverage, nowNanos)
+            bindInputs(mesh, surfaceCoverage, nowNanos)
             visible += plane
             when (kind) {
                 PlaneKind.FLOOR -> floors++
@@ -302,11 +346,12 @@ class PlaneRenderer(
             val mesh = meshes.getOrPut(wall) { createMesh(PlaneKind.WALL, fullCheckInside = true) }
             val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
             if (!mesh.hasRenderable || mesh.builtForDepth != depthAvailable) {
-                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL)) continue
+                // The outline is fixed relative to the wall's anchor, and so is its grid.
+                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL, OUTLINE_GRID)) continue
                 mesh.builtForDepth = depthAvailable
             }
             show(mesh, wall.anchor.pose)
-            bindInputs(mesh, wall.anchor.pose, null, nowNanos)
+            bindInputs(mesh, null, nowNanos)
             visible += wall
             marked++
         }
@@ -403,8 +448,19 @@ class PlaneRenderer(
         val heights = if (floor != null) {
             String.format(Locale.US, "bottom=%+.2f top=%+.2f above floor", extent.bottomY - floor, extent.topY - floor)
         } else {
-            "no floor"
+            String.format(Locale.US, "no floor, bottom=%+.2f top=%+.2f from camera", extent.bottomY - cameraPose.ty(), extent.topY - cameraPose.ty())
         }
+        // The raised surface it comes closest to, which decides whether it is a furniture side.
+        val nearestRaised = lastRaisedFootprints.minByOrNull { segmentDistanceToPolygon(extent.endA, extent.endB, it.outline) }
+        val raisedRelation = nearestRaised?.let {
+            String.format(
+                Locale.US,
+                " raised: top=%+.2f bottom=%+.2f gap=%.2f",
+                extent.topY - it.y,
+                extent.bottomY - it.y,
+                segmentDistanceToPolygon(extent.endA, extent.endB, it.outline),
+            )
+        } ?: ""
         val nearestWall = markedWalls.minByOrNull { wall ->
             val offset = floatArrayOf(pose.tx() - wall.point[0], pose.ty() - wall.point[1], pose.tz() - wall.point[2])
             abs(dot(offset, wall.normal))
@@ -419,7 +475,7 @@ class PlaneRenderer(
                 abs(dot(normal, wall.normal)),
             )
         } ?: ""
-        return String.format(Locale.US, "%s width=%.2f %s%s", heights, width, base, wallRelation)
+        return String.format(Locale.US, "%s width=%.2f %s%s%s", heights, width, base, raisedRelation, wallRelation)
     }
 
     /** The plane's outline in world space as (x, z) pairs (for horizontal planes). */
@@ -548,7 +604,7 @@ class PlaneRenderer(
      * coverage map ([surfaceCoverage], null for planes without one), whose texture is refreshed
      * when the coverage has changed, at most every [COVERAGE_UPLOAD_INTERVAL_NANOS].
      */
-    private fun bindInputs(mesh: PlaneMesh, pose: Pose, surfaceCoverage: SurfaceCoverage?, nowNanos: Long) {
+    private fun bindInputs(mesh: PlaneMesh, surfaceCoverage: SurfaceCoverage?, nowNanos: Long) {
         val instance = mesh.instance
         depthTexture?.let { instance.setParameter("depthTexture", it, linearSampler) }
         instance.setParameter("uvFromNdcU", ndcToUv[0], ndcToUv[1], ndcToUv[2])
@@ -566,40 +622,35 @@ class PlaneRenderer(
             instance.setParameter("coverageTexture", noCoverage, linearSampler)
             return
         }
-        pose.toMatrix(transform, 0)
         if (surfaceCoverage!!.version != mesh.coverageVersion &&
             nowNanos - mesh.lastCoverageUploadNanos >= COVERAGE_UPLOAD_INTERVAL_NANOS
         ) {
-            uploadCoverage(mesh, transform, surfaceCoverage)
+            uploadCoverage(mesh, surfaceCoverage)
             mesh.coverageVersion = surfaceCoverage.version
             mesh.lastCoverageUploadNanos = nowNanos
         }
         val texture = mesh.coverageTexture ?: noCoverage
         instance.setParameter("coverageTexture", texture, linearSampler)
-        // Mesh-local (u, v) -> world (x, z) -> texture coordinates. The texture spans whole
-        // cells from (coverageMinX, coverageMinZ).
+        // Grid coordinates of floors and raised surfaces are world (x, z); the texture spans
+        // whole cells from (coverageMinX, coverageMinZ).
         val width = mesh.coverageColumns * COVERAGE_CELL_METRES
         val height = mesh.coverageRows * COVERAGE_CELL_METRES
         if (width <= 0f || height <= 0f) return
-        val m = transform
-        instance.setParameter("coverageFromLocalU", m[0] / width, m[8] / width, (m[12] - mesh.coverageMinX) / width)
-        instance.setParameter("coverageFromLocalV", m[2] / height, m[10] / height, (m[14] - mesh.coverageMinZ) / height)
+        instance.setParameter("coverageFromGridU", 1f / width, 0f, -mesh.coverageMinX / width)
+        instance.setParameter("coverageFromGridV", 0f, 1f / height, -mesh.coverageMinZ / height)
     }
 
     /** Redraws the coverage texture over the world rectangle the plane is drawn in. */
-    private fun uploadCoverage(mesh: PlaneMesh, poseMatrix: FloatArray, surfaceCoverage: SurfaceCoverage) {
-        val outline = mesh.drawnOutline
+    private fun uploadCoverage(mesh: PlaneMesh, surfaceCoverage: SurfaceCoverage) {
+        val outline = mesh.drawnGridOutline
         if (outline.size < 6) return
         var minX = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE
         var minZ = Float.MAX_VALUE
         var maxZ = -Float.MAX_VALUE
-        val m = poseMatrix
         for (i in 0 until outline.size / 2) {
-            val u = outline[i * 2]
-            val v = outline[i * 2 + 1]
-            val x = m[0] * u + m[8] * v + m[12]
-            val z = m[2] * u + m[10] * v + m[14]
+            val x = outline[i * 2]
+            val z = outline[i * 2 + 1]
             minX = minOf(minX, x)
             maxX = maxOf(maxX, x)
             minZ = minOf(minZ, z)
@@ -672,21 +723,32 @@ class PlaneRenderer(
         upward.forEachIndexed { i, plane ->
             val kind = newKinds[plane]
             if (kind != PlaneKind.FLOOR && kind != PlaneKind.RAISED_SURFACE) return@forEachIndexed
-            coverage.getOrPut(plane) { SurfaceCoverage() }.observe(
+            val raised = kind == PlaneKind.RAISED_SURFACE
+            val planeCoverage = coverage.getOrPut(plane) { SurfaceCoverage() }
+            planeCoverage.observe(
                 measured.points,
                 measured.count,
                 measured.cameraPosition,
                 upwardInfo[i].y,
                 // Below a floor there are only reflections; below a table, the floor beyond its edge.
-                countsAgainst = kind == PlaneKind.RAISED_SURFACE,
+                countsAgainst = raised,
+                // Walls and furniture sides cross a table's height, but at floor height whatever
+                // is measured is the floor or stands on it, and the floor runs up to it.
+                steep = if (raised) measured.steep else null,
             )
+            if (raised) {
+                raisedPointsAtHeight += planeCoverage.lastPointsAtHeight
+                raisedSteepAtHeight += planeCoverage.lastSteepAtHeight
+            }
         }
     }
 
     /**
      * Builds the mesh for a convex [outline] of (u, v) pairs, drawn [dilation] metres larger.
-     * Vertices are placed at u * [axisU] + v * [axisV] in the mesh's local frame; (u, v) also
-     * drive the metric grid. Returns false if the polygon is degenerate (fewer than 3 vertices).
+     * Vertices are placed at u * [axisU] + v * [axisV] in the mesh's local frame. [grid] maps
+     * (u, v) to the coordinates the metric grid and the coverage map are drawn in (uv0), as two
+     * rows of (u, v, 1) coefficients (see [gridFromPlaneLocal]). Returns false if the polygon is
+     * degenerate (fewer than 3 vertices).
      *
      * Three rings of vertices, outermost first: the enlarged outline (transparent, for a soft
      * edge), the same pulled [feather] metres inwards (opaque), and the original outline.
@@ -701,6 +763,7 @@ class PlaneRenderer(
         feather: Float,
         mesh: PlaneMesh,
         kind: PlaneKind,
+        grid: FloatArray,
     ): Boolean {
         val vertexCount = outline.size / 2
         if (vertexCount < 3) return false
@@ -712,7 +775,14 @@ class PlaneRenderer(
         }
 
         val enlarged = dilateConvexOutline(outline, dilation)
-        mesh.drawnOutline = enlarged
+        mesh.drawnGridOutline = FloatArray(enlarged.size).also { mapped ->
+            for (i in 0 until vertexCount) {
+                val u = enlarged[i * 2]
+                val v = enlarged[i * 2 + 1]
+                mapped[i * 2] = grid[0] * u + grid[1] * v + grid[2]
+                mapped[i * 2 + 1] = grid[3] * u + grid[4] * v + grid[5]
+            }
+        }
         val opaque = insetConvexOutline(enlarged, feather)
         val rings = arrayOf(enlarged, opaque, if (dilation > feather) outline else opaque)
         val margin = if (dilation > 0f) 1f else 0f
@@ -727,8 +797,8 @@ class PlaneRenderer(
                 val u = points[i * 2]
                 val v = points[i * 2 + 1]
                 for (axis in 0 until 3) positions[vertex * 3 + axis] = u * axisU[axis] + v * axisV[axis]
-                uvs[vertex * 2] = u
-                uvs[vertex * 2 + 1] = v
+                uvs[vertex * 2] = grid[0] * u + grid[1] * v + grid[2]
+                uvs[vertex * 2 + 1] = grid[3] * u + grid[4] * v + grid[5]
                 fadeAndMargin[vertex * 2] = if (ring == 0) 0f else 1f
                 fadeAndMargin[vertex * 2 + 1] = if (ring == RINGS - 1) 0f else margin
             }
@@ -852,6 +922,36 @@ class PlaneRenderer(
         }
     }
 }
+
+/**
+ * Map from an ARCore plane's outline coordinates ((x, z) in the frame of its pose, given as the
+ * column-major matrix [m]) to grid coordinates fixed in the world, as two rows of (u, v, 1)
+ * coefficients: world (x, z) for horizontal planes; for [vertical] ones, distance along the
+ * wall's horizontal direction and height. ARCore moves and turns a plane's centre pose as it
+ * refines the plane, and a grid drawn in the plane's own frame would slide and turn with it; the
+ * hello_ar sample in ARCore's SDK likewise projects world positions to place its grid.
+ */
+internal fun gridFromPlaneLocal(m: FloatArray, vertical: Boolean): FloatArray {
+    // A local point (u, 0, v) is at world m * (u, 0, v, 1).
+    if (!vertical) return floatArrayOf(m[0], m[8], m[12], m[2], m[10], m[14])
+    // The plane's normal is its local y axis; the horizontal direction along the wall is
+    // perpendicular to it.
+    val length = hypot(m[4], m[6])
+    if (length < 1e-6f) return floatArrayOf(m[0], m[8], m[12], m[1], m[9], m[13])
+    val alongX = -m[6] / length
+    val alongZ = m[4] / length
+    return floatArrayOf(
+        alongX * m[0] + alongZ * m[2],
+        alongX * m[8] + alongZ * m[10],
+        alongX * m[12] + alongZ * m[14],
+        m[1],
+        m[9],
+        m[13],
+    )
+}
+
+/** Grid coordinates that are the outline's own (u, v), for outlines fixed to an anchor. */
+internal val OUTLINE_GRID = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f)
 
 /**
  * Pushes every vertex of a convex outline ((u, v) pairs) [distance] further from the outline's
