@@ -62,8 +62,8 @@ fun ArOverlay(
                 status.cameraHeightMetres?.let { String.format(Locale.US, "%.2f m above floor", it) } ?: "-",
             )
             DebugLine("Depth", if (status.depthActive) "on" else "off")
-            DebugLine("Floor fit", fitLabel(status.floorOffsetMetres))
-            DebugLine("Wall fit", fitLabel(status.wallOffsetMetres))
+            DebugLine("Floor fit", fitLabel(status.floorOffsetMetres, status.floorFitInliers))
+            DebugLine("Wall fit", fitLabel(status.wallOffsetMetres, status.wallFitInliers))
             DebugLine(
                 "Cube",
                 status.cubeDistanceMetres?.let { String.format(Locale.US, "%.2f m away", it) } ?: "not placed",
@@ -117,8 +117,12 @@ private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
-private fun fitLabel(offsetMetres: Float?): String =
-    offsetMetres?.let { String.format(Locale.US, "%+.1f cm vs depth", it * 100) } ?: "-"
+/** e.g. "+1.2 cm (87% on surface)": the share shows how much of the view saw the surface itself. */
+private fun fitLabel(offsetMetres: Float?, inliers: Float?): String {
+    if (offsetMetres == null) return "-"
+    val share = inliers?.let { String.format(Locale.US, " (%d%% on surface)", (it * 100).toInt()) } ?: ""
+    return String.format(Locale.US, "%+.1f cm%s", offsetMetres * 100, share)
+}
 
 @Composable
 private fun DebugLine(label: String, value: String) {

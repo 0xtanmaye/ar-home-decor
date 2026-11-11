@@ -4,7 +4,7 @@ How to run the AR view so that results are reliable and repeatable.
 
 ## Before a session
 
-- **Phone:** battery above 30% or plugged in, battery saver **off** (it throttles the GPU and lowers FPS), camera lens wiped clean.
+- **Phone:** battery above 30% or plugged in, battery saver **off** (it throttles the GPU and lowers FPS), camera lens wiped clean. For sessions longer than about 15 minutes, keep it charging.
 - **Screen:** Developer options → **Stay awake** keeps the screen on while charging, so it doesn't lock mid-test.
 - **Room:** lights on and as even as possible. Avoid patches of direct sunlight and strong glare on glossy floors.
 - **Logs and screenshots** (only needed when the VM should read results): Wireless debugging on, then run `./tools/connect-phone.sh` on the VM.
@@ -32,11 +32,15 @@ Walls without texture can't be detected automatically yet, so they are marked by
 
 Tip: tap from 1–2 m away, looking at the base of the wall at an angle rather than straight down.
 
+**Steps, pillars and recesses:** a marked wall is one flat face. Shallow steps (up to about 10 cm) are bridged, but a pillar or a deeper step is a separate face: mark its front, and each side if needed, with its own two taps. A marked wall extends about 3 m past your taps, and depth cuts it back to where the real wall ends, so tapping near the middle of a wall is enough.
+
+**Fit readings** show "(NN% on surface)": the share of the view that saw the surface itself rather than furniture or curtains in front of it. Readings with a higher share are more trustworthy.
+
 ## Reading the debug panel
 
 | Line | Meaning | Good value |
 |---|---|---|
-| FPS | Frames drawn per second | ~60 (30 is acceptable on mid-range phones) |
+| FPS | Frames drawn per second. The view is only redrawn when the camera delivers a new image, so this matches the camera rate | ~30 (steady) |
 | Tracking | ARCore state; when lost, the reason is shown and the bottom hint says what to do | `tracking` |
 | Floors / Surfaces / Walls | Planes currently detected (walls: detected by ARCore, and marked by hand) | — |
 | Height | Camera height above the detected floor | Matches a tape measure |

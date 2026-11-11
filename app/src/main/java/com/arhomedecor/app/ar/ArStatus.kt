@@ -21,6 +21,8 @@ data class ArStatus(
     val markedWalls: Int = 0,
     /** Marked walls relative to the real walls measured by depth; positive = in front. */
     val wallOffsetMetres: Float? = null,
+    /** Share of wall samples that saw the wall itself rather than something in front. */
+    val wallFitInliers: Float? = null,
     val fps: Int = 0,
     val tracking: TrackingState = TrackingState.PAUSED,
     val failureReason: TrackingFailureReason = TrackingFailureReason.NONE,
@@ -34,6 +36,8 @@ data class ArStatus(
     val depthActive: Boolean = false,
     /** Floor plane height relative to the real floor measured by depth; positive = above. */
     val floorOffsetMetres: Float? = null,
+    /** Share of floor samples that saw the floor itself rather than something on it. */
+    val floorFitInliers: Float? = null,
     /** Distance from the camera to the reference cube, or null if it hasn't been placed. */
     val cubeDistanceMetres: Float? = null,
     /** A blocking problem (e.g. ARCore missing); overrides the normal hint. */

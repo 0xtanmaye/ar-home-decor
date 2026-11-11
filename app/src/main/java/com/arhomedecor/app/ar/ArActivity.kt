@@ -24,7 +24,6 @@ import com.arhomedecor.app.device.DeviceCapabilityChecker
 import com.arhomedecor.app.render.ArRenderer
 import com.arhomedecor.app.render.ManualWall
 import com.arhomedecor.app.render.PlaneKind
-import com.arhomedecor.app.render.classifyPlane
 import com.arhomedecor.app.render.wallFromFloorPoints
 import com.arhomedecor.app.render.wallOutline
 import com.google.ar.core.Anchor
@@ -69,6 +68,11 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private val walls = ArrayList<ManualWall>()
     /** First tap along a wall's base, waiting for the second. */
     private var wallStartAnchor: Anchor? = null
+
+    private var lastCameraTimestamp = 0L
+    private var frameCpuNanosTotal = 0L
+    private var frameCpuNanosMax = 0L
+    private var framesTimed = 0
 
     private var lastTrackingState: TrackingState? = null
     private var lastFailureReason: TrackingFailureReason? = null
@@ -239,8 +243,12 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             showError("The camera was disconnected. Close and reopen this screen.")
             return
         }
-        // No camera image yet (first frames after resume).
-        if (frame.timestamp == 0L) return
+        // No camera image yet (first frames after resume), or no new one since the last draw:
+        // the camera runs slower than the display, and redrawing the same image and pose would
+        // only cost battery and heat.
+        if (frame.timestamp == 0L || frame.timestamp == lastCameraTimestamp) return
+        lastCameraTimestamp = frame.timestamp
+        val cpuStart = System.nanoTime()
 
         lastFrameNanos = frameTimeNanos
         val camera = frame.camera
@@ -255,6 +263,11 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
 
         fpsCounter.onFrame(frameTimeNanos)
         publishStatus(frame, camera, frameTimeNanos)
+
+        val cpuNanos = System.nanoTime() - cpuStart
+        frameCpuNanosTotal += cpuNanos
+        frameCpuNanosMax = maxOf(frameCpuNanosMax, cpuNanos)
+        framesTimed++
     }
 
     private fun handleTaps(session: Session, frame: Frame, camera: Camera) {
@@ -285,8 +298,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
      * floor is flat, and its outline often stops short of a plain wall.
      */
     private fun markWallPoint(session: Session, frame: Frame, camera: Camera, tap: MotionEvent) {
-        val floorY = renderer.floorY ?: return
-        val hit = frame.hitTest(tap).firstOrNull { isFloorLevelHit(it, floorY) } ?: return
+        val hit = frame.hitTest(tap).firstOrNull(::isFloorLevelHit) ?: return
+        val floorY = hit.hitPose.ty()
         val point = hit.hitPose.translation
         val start = wallStartAnchor
         if (start == null) {
@@ -369,10 +382,10 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         return plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING && plane.isPoseInPolygon(hit.hitPose)
     }
 
-    /** Anywhere on the floor's plane, even beyond its detected outline. */
-    private fun isFloorLevelHit(hit: HitResult, floorY: Float): Boolean {
+    /** Anywhere on a floor plane, even beyond its detected outline. */
+    private fun isFloorLevelHit(hit: HitResult): Boolean {
         val plane = hit.trackable as? Plane ?: return false
-        return classifyPlane(plane.type, plane.centerPose.ty(), floorY) == PlaneKind.FLOOR
+        return renderer.planeKind(plane) == PlaneKind.FLOOR
     }
 
     private fun publishStatus(frame: Frame, camera: Camera, frameTimeNanos: Long) {
@@ -415,11 +428,13 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 cameraHeightMetres = cameraHeight,
                 depthActive = renderer.depth.available,
                 floorOffsetMetres = floorProbeResult?.offsetMetres,
+                floorFitInliers = floorProbeResult?.inlierFraction,
                 cubeDistanceMetres = cubeDistance,
                 mode = mode,
                 wallStartPlaced = wallStartAnchor != null,
                 markedWalls = counts.markedWalls,
                 wallOffsetMetres = wallProbeResult?.offsetMetres,
+                wallFitInliers = wallProbeResult?.inlierFraction,
                 notice = notice?.takeIf { frameTimeNanos - noticeNanos < NOTICE_DURATION_NANOS },
             )
         }
@@ -437,12 +452,19 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     "depth=${renderer.depth.width}x${renderer.depth.height} " +
                     "floorFit=${probe?.let { String.format(Locale.US, "%+.3f", it.offsetMetres) } ?: "none"} " +
                     "floorFitSamples=${probe?.samples ?: 0} " +
+                    "floorFitInliers=${probe?.let { String.format(Locale.US, "%.2f", it.inlierFraction) } ?: "none"} " +
                     "markedWalls=${counts.markedWalls} " +
                     "wallFit=${wallProbeResult?.let { String.format(Locale.US, "%+.3f", it.offsetMetres) } ?: "none"} " +
                     "wallFitSamples=${wallProbeResult?.samples ?: 0} " +
+                    "wallFitInliers=${wallProbeResult?.let { String.format(Locale.US, "%.2f", it.inlierFraction) } ?: "none"} " +
                     "cube=${s.cubeDistanceMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
+                    "cpuMsAvg=${String.format(Locale.US, "%.1f", frameCpuNanosTotal / 1e6 / maxOf(framesTimed, 1))} " +
+                    "cpuMsMax=${String.format(Locale.US, "%.1f", frameCpuNanosMax / 1e6)} " +
                     "frameTs=${frame.timestamp}",
             )
+            frameCpuNanosTotal = 0L
+            frameCpuNanosMax = 0L
+            framesTimed = 0
         }
     }
 
@@ -459,7 +481,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         const val LOG_INTERVAL_NANOS = 1_000_000_000L
         const val DEFAULT_WALL_HEIGHT_METRES = 2.8f
         const val WALL_MARGIN_METRES = 0.3f
-        const val WALL_MARGIN_WITH_DEPTH_METRES = 1.5f
+        const val WALL_MARGIN_WITH_DEPTH_METRES = 3.0f
         val CUBE_EDGE_CENTIMETRES = (ArRenderer.REFERENCE_CUBE_EDGE_METRES * 100).roundToInt()
     }
 }

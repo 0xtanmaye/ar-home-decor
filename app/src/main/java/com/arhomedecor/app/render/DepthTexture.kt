@@ -6,13 +6,17 @@ import com.google.ar.core.Frame
 import com.google.ar.core.exceptions.NotYetAvailableException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
+import java.nio.ShortBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 
 /**
  * Uploads ARCore's depth image (metres, 0 = no measurement) to a Filament texture each time a
  * new one arrives, and keeps a CPU copy for measurements.
+ *
+ * The texture is half-float (R16F) because, unlike 32-bit float, it can be sampled with linear
+ * filtering on every OpenGL ES 3 device, which keeps depth-trimmed edges smooth. Half precision
+ * is about 1 mm at 1 m and 4 mm at 4 m, well below the depth image's own noise.
  *
  * The depth image covers the same view as the camera texture, so camera texture UVs address it.
  */
@@ -21,7 +25,7 @@ import java.util.concurrent.Executor
 @Suppress("DEPRECATION")
 class DepthTexture(private val engine: Engine) {
     var texture: Texture = buildTexture(1, 1).also {
-        it.setImage(engine, 0, Texture.PixelBufferDescriptor(floatBufferOf(floatArrayOf(0f)), Texture.Format.R, Texture.Type.FLOAT))
+        it.setImage(engine, 0, Texture.PixelBufferDescriptor(halfBuffer(1), Texture.Format.R, Texture.Type.HALF))
     }
         private set
 
@@ -42,7 +46,7 @@ class DepthTexture(private val engine: Engine) {
 
     // Upload buffers are returned here by Filament once it has copied them, so a steady
     // stream of depth images doesn't keep allocating native memory.
-    private val freeBuffers = ConcurrentLinkedQueue<FloatBuffer>()
+    private val freeBuffers = ConcurrentLinkedQueue<ShortBuffer>()
     private val runOnFilamentThread = Executor { it.run() }
 
     /** Uploads the frame's depth image if it is new. Returns true if one was uploaded. */
@@ -72,13 +76,14 @@ class DepthTexture(private val engine: Engine) {
             }
         }
 
-        val upload = freeBuffers.poll()?.takeIf { it.capacity() == metres.size } ?: newBuffer(metres.size)
+        val upload = freeBuffers.poll()?.takeIf { it.capacity() == metres.size } ?: halfBuffer(metres.size)
         upload.clear()
-        upload.put(metres).flip()
+        for (value in metres) upload.put(floatToHalf(value))
+        upload.flip()
         texture.setImage(
             engine,
             0,
-            Texture.PixelBufferDescriptor(upload, Texture.Format.R, Texture.Type.FLOAT, runOnFilamentThread) {
+            Texture.PixelBufferDescriptor(upload, Texture.Format.R, Texture.Type.HALF, runOnFilamentThread) {
                 freeBuffers.offer(upload)
             },
         )
@@ -110,9 +115,40 @@ class DepthTexture(private val engine: Engine) {
         .height(textureHeight)
         .levels(1)
         .sampler(Texture.Sampler.SAMPLER_2D)
-        .format(Texture.InternalFormat.R32F)
+        .format(Texture.InternalFormat.R16F)
         .build(engine)
 
-    private fun newBuffer(size: Int): FloatBuffer =
-        ByteBuffer.allocateDirect(size * Float.SIZE_BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private fun halfBuffer(size: Int): ShortBuffer =
+        ByteBuffer.allocateDirect(size * Short.SIZE_BYTES).order(ByteOrder.nativeOrder()).asShortBuffer()
+}
+
+/**
+ * IEEE 754 half-precision bits for [value], rounding to nearest. Written out because
+ * android.util.Half needs API 26 and the app supports API 24. Depth values are small positive
+ * numbers, but the full range is handled: overflow becomes infinity, tiny values become
+ * subnormals or zero.
+ */
+internal fun floatToHalf(value: Float): Short {
+    val bits = java.lang.Float.floatToRawIntBits(value)
+    val sign = (bits ushr 16) and 0x8000
+    val exponent = ((bits ushr 23) and 0xFF) - 127 + 15
+    var mantissa = bits and 0x7FFFFF
+
+    if (exponent >= 0x1F) {
+        // Overflow, infinity or NaN.
+        val isNaN = ((bits ushr 23) and 0xFF) == 0xFF && mantissa != 0
+        return (sign or 0x7C00 or (if (isNaN) 0x200 else 0)).toShort()
+    }
+    if (exponent <= 0) {
+        if (exponent < -10) return sign.toShort() // too small: signed zero
+        // Subnormal: shift the mantissa (with its implicit leading 1) into place, rounding.
+        mantissa = mantissa or 0x800000
+        val shift = 14 - exponent
+        val rounded = (mantissa + (1 shl (shift - 1))) ushr shift
+        return (sign or rounded).toShort()
+    }
+    // Normal: round the 23-bit mantissa to 10 bits; a carry correctly bumps the exponent.
+    val half = (exponent shl 10) or (mantissa ushr 13)
+    val rounded = half + ((mantissa ushr 12) and 1)
+    return (sign or rounded).toShort()
 }

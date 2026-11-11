@@ -29,6 +29,12 @@ material {
             name : hideWhenFarther
         },
         {
+            // Depth mismatch (metres, at zero distance) still treated as the same surface.
+            // Larger for walls so shallow steps, skirting boards and switches don't cut them.
+            type : float,
+            name : baseTolerance
+        },
+        {
             // Affine map from screen NDC (x, y, 1) to depth-image UV.
             type : float3,
             name : uvFromNdcU
@@ -64,7 +70,7 @@ fragment {
         highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
         highp float planeDepth = -viewPosition.z;
         // Depth from a single moving camera gets less precise with distance.
-        highp float tolerance = 0.05 + 0.04 * planeDepth;
+        highp float tolerance = materialParams.baseTolerance + 0.04 * planeDepth;
         highp float behind = realDepth - planeDepth;
         if (behind < 0.0) {
             return 1.0 - smoothstep(tolerance, 2.0 * tolerance, -behind);

@@ -28,18 +28,50 @@ data class PlaneCounts(
     val markedWalls: Int = 0,
 )
 
-/** Upward-facing planes within this distance of the lowest one count as floor. */
+/** Upward-facing planes within this height of their local floor count as floor. */
 internal const val FLOOR_TOLERANCE_METRES = 0.10f
 
+/** Hysteresis: a floor must rise this far to become a raised surface... */
+internal const val FLOOR_EXIT_METRES = 0.14f
+
+/** ...and a raised surface must drop this low to become floor again. */
+internal const val FLOOR_ENTER_METRES = 0.07f
+
+/** Planes whose footprints come this close count as neighbours when finding the local floor. */
+internal const val NEIGHBOUR_GAP_METRES = 1.0f
+
+/** Footprint of an upward-facing plane: centre height and position, and outline radius. */
+internal class HorizontalPlaneInfo(val y: Float, val x: Float, val z: Float, val radius: Float)
+
 /**
- * ARCore labels every upward-facing surface the same way (floor, table, bed), so the floor is
- * taken to be the lowest one, and anything noticeably higher is a raised surface.
+ * ARCore labels every upward-facing surface the same way (floor, table, bed), so each plane's
+ * floor is the lowest upward plane among its neighbours (including itself). Looking only
+ * nearby matters: another room's floor can sit lower, through a real step or slight drift,
+ * and must not turn this room's floor into a "raised surface".
  */
-internal fun classifyPlane(type: Plane.Type, planeY: Float, floorY: Float?): PlaneKind = when (type) {
-    Plane.Type.VERTICAL -> PlaneKind.WALL
-    Plane.Type.HORIZONTAL_DOWNWARD_FACING -> PlaneKind.CEILING
-    Plane.Type.HORIZONTAL_UPWARD_FACING ->
-        if (floorY == null || planeY - floorY <= FLOOR_TOLERANCE_METRES) PlaneKind.FLOOR else PlaneKind.RAISED_SURFACE
+internal fun localFloorLevels(planes: List<HorizontalPlaneInfo>, neighbourGap: Float = NEIGHBOUR_GAP_METRES): FloatArray =
+    FloatArray(planes.size) { i ->
+        val plane = planes[i]
+        var lowest = plane.y
+        for (other in planes) {
+            val gap = hypot(plane.x - other.x, plane.z - other.z) - plane.radius - other.radius
+            if (gap <= neighbourGap && other.y < lowest) lowest = other.y
+        }
+        lowest
+    }
+
+/**
+ * Floor or raised surface, from the plane's height above its local floor. [wasFloor] (the
+ * previous classification, null for a new plane) adds hysteresis so a plane near the
+ * threshold doesn't flicker between the two.
+ */
+internal fun classifyUpward(planeY: Float, localFloorY: Float, wasFloor: Boolean?): PlaneKind {
+    val threshold = when (wasFloor) {
+        true -> FLOOR_EXIT_METRES
+        false -> FLOOR_ENTER_METRES
+        null -> FLOOR_TOLERANCE_METRES
+    }
+    return if (planeY - localFloorY <= threshold) PlaneKind.FLOOR else PlaneKind.RAISED_SURFACE
 }
 
 /**
@@ -62,7 +94,15 @@ class PlaneRenderer(
         var hasRenderable = false
         var inScene = false
         var kind: PlaneKind? = null
+        /** Whether the current geometry was sized for depth trimming (see [update]). */
+        var builtForDepth = false
+        var lastBuildNanos = 0L
     }
+
+    /** Classification of each tracked ARCore plane from the last update. */
+    private var kinds: Map<Plane, PlaneKind> = emptyMap()
+
+    fun kindOf(plane: Plane): PlaneKind? = kinds[plane]
 
     /** One material instance per kind: colour differs, depth inputs are shared. */
     private val kindMaterials: Map<PlaneKind, MaterialInstance> = PlaneKind.entries.associateWith { kind ->
@@ -74,11 +114,12 @@ class PlaneRenderer(
             // Nothing real lies beyond a floor or ceiling, so "farther" readings there are noise.
             val checkOverhang = kind == PlaneKind.RAISED_SURFACE || kind == PlaneKind.WALL
             setParameter("hideWhenFarther", if (checkOverhang) 1f else 0f)
+            setParameter("baseTolerance", if (kind == PlaneKind.WALL) WALL_TOLERANCE_METRES else TOLERANCE_METRES)
         }
     }
     private val depthSampler = TextureSampler(
-        TextureSampler.MinFilter.NEAREST,
-        TextureSampler.MagFilter.NEAREST,
+        TextureSampler.MinFilter.LINEAR,
+        TextureSampler.MagFilter.LINEAR,
         TextureSampler.WrapMode.CLAMP_TO_EDGE,
     )
 
@@ -89,7 +130,7 @@ class PlaneRenderer(
     var counts = PlaneCounts()
         private set
 
-    /** World-space height of the floor (lowest upward-facing plane), or null if none is tracked. */
+    /** World-space height of the floor nearest the camera, or null if none is tracked. */
     var floorY: Float? = null
         private set
 
@@ -97,7 +138,7 @@ class PlaneRenderer(
     var ceilingY: Float? = null
         private set
 
-    /** Heights of raised surfaces above the floor, in metres, for diagnostics. */
+    /** Heights of raised surfaces above their local floor, in metres, for diagnostics. */
     var raisedSurfaceHeights: List<Float> = emptyList()
         private set
 
@@ -118,14 +159,45 @@ class PlaneRenderer(
         }
     }
 
-    fun update(session: Session, frame: Frame, manualWalls: Collection<ManualWall>) {
+    /**
+     * With [depthAvailable], ARCore planes are drawn larger than their detected outline and
+     * left to the depth check to cut back to the real surface's edges: ARCore's outline is only
+     * a hull of the points it happened to track, while depth sees the whole surface.
+     *
+     * ARCore refines planes almost every frame; outlines are rebuilt at most every
+     * [REBUILD_INTERVAL_NANOS] per plane, since rebuilding allocates new GPU buffers.
+     */
+    fun update(
+        session: Session,
+        frame: Frame,
+        manualWalls: Collection<ManualWall>,
+        depthAvailable: Boolean,
+        cameraPose: Pose,
+        nowNanos: Long,
+    ) {
         val updated = frame.getUpdatedTrackables(Plane::class.java).toHashSet()
         val tracked = session.getAllTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
-        val floor = tracked
-            .filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
-            .minOfOrNull { it.centerPose.ty() }
-        floorY = floor
+
+        val upward = tracked.filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
+        val upwardInfo = upward.map { it.horizontalInfo() }
+        val localFloors = localFloorLevels(upwardInfo)
+        val newKinds = HashMap<Plane, PlaneKind>(tracked.size)
+        val localFloorOf = HashMap<Plane, Float>(upward.size)
+        upward.forEachIndexed { i, plane ->
+            val wasFloor = (meshes[plane]?.kind ?: kinds[plane])?.let { it == PlaneKind.FLOOR }
+            newKinds[plane] = classifyUpward(upwardInfo[i].y, localFloors[i], wasFloor)
+            localFloorOf[plane] = localFloors[i]
+        }
+        for (plane in tracked) {
+            when (plane.type) {
+                Plane.Type.VERTICAL -> newKinds[plane] = PlaneKind.WALL
+                Plane.Type.HORIZONTAL_DOWNWARD_FACING -> newKinds[plane] = PlaneKind.CEILING
+                Plane.Type.HORIZONTAL_UPWARD_FACING -> Unit
+            }
+        }
+        kinds = newKinds
+        floorY = nearestFloorY(upward, upwardInfo, cameraPose)
         ceilingY = tracked
             .filter { it.type == Plane.Type.HORIZONTAL_DOWNWARD_FACING }
             .minOfOrNull { it.centerPose.ty() }
@@ -139,14 +211,25 @@ class PlaneRenderer(
 
         for (plane in tracked) {
             val pose = plane.centerPose
-            val kind = classifyPlane(plane.type, pose.ty(), floor)
+            val kind = newKinds.getValue(plane)
             val mesh = meshes.getOrPut(plane) { createMesh() }
-            val needsGeometry = !mesh.hasRenderable || plane in updated
+            val rebuildDue = plane in updated && nowNanos - mesh.lastBuildNanos >= REBUILD_INTERVAL_NANOS
+            // With depth, the outline is enlarged by an amount that depends on the kind.
+            val kindChangesSize = depthAvailable && mesh.kind != null && mesh.kind != kind
+            val needsGeometry = !mesh.hasRenderable || mesh.builtForDepth != depthAvailable || rebuildDue || kindChangesSize
             if (needsGeometry) {
                 val polygon = plane.polygon
-                val outline = FloatArray(polygon.remaining()) { polygon.get(it) }
                 // ARCore polygons are (x, z) pairs in the plane's local frame (the plane is y = 0).
-                if (!updateGeometry(outline, PLANE_AXIS_X, PLANE_AXIS_Z, mesh, kind)) continue
+                var outline = FloatArray(polygon.remaining()) { polygon.get(it) }
+                val feather = if (depthAvailable) {
+                    outline = dilateConvexOutline(outline, depthExpansionFor(kind))
+                    DEPTH_FEATHER_METRES
+                } else {
+                    FEATHER_METRES
+                }
+                if (!updateGeometry(outline, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind)) continue
+                mesh.builtForDepth = depthAvailable
+                mesh.lastBuildNanos = nowNanos
             }
 
             if (kind != mesh.kind) {
@@ -157,7 +240,7 @@ class PlaneRenderer(
             visible += plane
             when (kind) {
                 PlaneKind.FLOOR -> floors++
-                PlaneKind.RAISED_SURFACE -> raised += pose.ty() - (floor ?: pose.ty())
+                PlaneKind.RAISED_SURFACE -> raised += pose.ty() - (localFloorOf[plane] ?: pose.ty())
                 PlaneKind.WALL -> walls++
                 PlaneKind.CEILING -> ceilings++
             }
@@ -167,7 +250,11 @@ class PlaneRenderer(
         for (wall in manualWalls) {
             if (wall.anchor.trackingState != TrackingState.TRACKING) continue
             val mesh = meshes.getOrPut(wall) { createMesh() }
-            if (!mesh.hasRenderable && !updateGeometry(wall.outline, wall.alongWall, UP, mesh, PlaneKind.WALL)) continue
+            val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
+            if (!mesh.hasRenderable || mesh.builtForDepth != depthAvailable) {
+                if (!updateGeometry(wall.outline, wall.alongWall, UP, feather, mesh, PlaneKind.WALL)) continue
+                mesh.builtForDepth = depthAvailable
+            }
             show(mesh, wall.anchor.pose)
             visible += wall
             marked++
@@ -199,6 +286,32 @@ class PlaneRenderer(
             }
         }
         discardedLastUpdate = discarded
+    }
+
+    /** Height of the floor plane closest to the camera horizontally (its outline, not centre). */
+    private fun nearestFloorY(upward: List<Plane>, info: List<HorizontalPlaneInfo>, cameraPose: Pose): Float? {
+        var bestY: Float? = null
+        var bestGap = Float.MAX_VALUE
+        upward.forEachIndexed { i, plane ->
+            if (kinds[plane] != PlaneKind.FLOOR) return@forEachIndexed
+            val gap = maxOf(0f, hypot(cameraPose.tx() - info[i].x, cameraPose.tz() - info[i].z) - info[i].radius)
+            if (gap < bestGap) {
+                bestGap = gap
+                bestY = info[i].y
+            }
+        }
+        return bestY
+    }
+
+    private fun Plane.horizontalInfo(): HorizontalPlaneInfo {
+        val pose = centerPose
+        val polygon = polygon
+        var radius = 0f
+        // Outline vertices are relative to the plane's centre, so their length is the radius.
+        for (i in 0 until polygon.remaining() / 2) {
+            radius = maxOf(radius, hypot(polygon.get(i * 2), polygon.get(i * 2 + 1)))
+        }
+        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), radius)
     }
 
     private fun show(mesh: PlaneMesh, pose: Pose) {
@@ -234,6 +347,7 @@ class PlaneRenderer(
         outline: FloatArray,
         axisU: FloatArray,
         axisV: FloatArray,
+        feather: Float,
         mesh: PlaneMesh,
         kind: PlaneKind,
     ): Boolean {
@@ -246,9 +360,8 @@ class PlaneRenderer(
             allocateBuffers(mesh, maxOf(vertexCount, mesh.capacity * 2))
         }
 
-        // ARCore's outline is only a rough hull of tracked points, so it is drawn with a soft
-        // edge: an outer ring (transparent) on the outline and an inner ring (opaque) pulled
-        // FEATHER_METRES towards the centre.
+        // Drawn with a soft edge: an outer ring (transparent) on the outline and an inner ring
+        // (opaque) pulled [feather] metres towards the centre.
         var cx = 0f
         var cz = 0f
         for (i in 0 until vertexCount) {
@@ -265,7 +378,7 @@ class PlaneRenderer(
             val x = outline[i * 2]
             val z = outline[i * 2 + 1]
             val distance = hypot(x - cx, z - cz)
-            val scale = if (distance > 0f) maxOf(MIN_INNER_SCALE, 1f - FEATHER_METRES / distance) else 0f
+            val scale = if (distance > 0f) maxOf(MIN_INNER_SCALE, 1f - feather / distance) else 0f
             val ix = cx + (x - cx) * scale
             val iz = cz + (z - cz) * scale
             val inner = vertexCount + i
@@ -336,7 +449,29 @@ class PlaneRenderer(
         val PLANE_AXIS_Z = floatArrayOf(0f, 0f, 1f)
 
         const val GRID_SPACING_METRES = 0.25f
+
+        /** Edge fade when ARCore's outline is all there is. */
         const val FEATHER_METRES = 0.15f
+
+        /** Edge fade when depth trims the surface: depth already places the edge. */
+        const val DEPTH_FEATHER_METRES = 0.05f
+
+        const val TOLERANCE_METRES = 0.05f
+        const val WALL_TOLERANCE_METRES = 0.10f
+
+        /** Outline rebuilds per plane at most 10 times a second. */
+        const val REBUILD_INTERVAL_NANOS = 100_000_000L
+
+        /**
+         * How far past ARCore's outline a surface is drawn when depth can trim it. Floors get
+         * the most: they usually extend well beyond what was tracked, and walls and furniture
+         * standing on them hide the excess.
+         */
+        fun depthExpansionFor(kind: PlaneKind): Float = when (kind) {
+            PlaneKind.FLOOR -> 0.6f
+            PlaneKind.RAISED_SURFACE, PlaneKind.WALL -> 0.3f
+            PlaneKind.CEILING -> 0f
+        }
 
         /** Keeps small planes visible: the inner ring never shrinks below this fraction. */
         const val MIN_INNER_SCALE = 0.3f
@@ -355,6 +490,34 @@ class PlaneRenderer(
             PlaneKind.CEILING -> CEILING_COLOR
         }
     }
+}
+
+/**
+ * Pushes every vertex of a convex outline ((u, v) pairs) [distance] further from the outline's
+ * centroid. The result is still convex; a radial push is not an exact offset curve, but for
+ * ARCore's hulls (many short edges) the difference is negligible.
+ */
+internal fun dilateConvexOutline(outline: FloatArray, distance: Float): FloatArray {
+    if (distance == 0f) return outline
+    val count = outline.size / 2
+    var cu = 0f
+    var cv = 0f
+    for (i in 0 until count) {
+        cu += outline[i * 2]
+        cv += outline[i * 2 + 1]
+    }
+    cu /= count
+    cv /= count
+    val result = FloatArray(outline.size)
+    for (i in 0 until count) {
+        val du = outline[i * 2] - cu
+        val dv = outline[i * 2 + 1] - cv
+        val length = hypot(du, dv)
+        val scale = if (length > 0f) (length + distance) / length else 1f
+        result[i * 2] = cu + du * scale
+        result[i * 2 + 1] = cv + dv * scale
+    }
+    return result
 }
 
 internal fun featheredIndexCount(vertexCount: Int) = (vertexCount - 2) * 3 + vertexCount * 6

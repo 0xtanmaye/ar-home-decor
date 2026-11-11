@@ -16,7 +16,12 @@ import kotlin.math.abs
  * positive means the plane sits above the real floor.
  */
 class FloorDepthProbe {
-    data class Result(val offsetMetres: Float, val samples: Int)
+    /**
+     * [offsetMetres] is the median over [samples] inlier samples; [inlierFraction] is the share
+     * of all samples that were inliers (the rest saw something in front of, or far behind, the
+     * plane: furniture, people, reflections).
+     */
+    data class Result(val offsetMetres: Float, val samples: Int, val inlierFraction: Float)
 
     private var viewWidth = 0
     private var viewHeight = 0
@@ -46,8 +51,7 @@ class FloorDepthProbe {
             if (planeDepth <= 0f || realDepth <= 0f) continue
             offsets += planeOffsetFromRealSurface(cameraPose.ty() - hitPoint[1], planeDepth, realDepth)
         }
-        if (offsets.size < MIN_SAMPLES) return null
-        return Result(median(offsets), offsets.size)
+        return robustFit(offsets)
     }
 
     private fun buildGrid(width: Int, height: Int) {
@@ -67,8 +71,18 @@ class FloorDepthProbe {
     private companion object {
         const val COLUMNS = 8
         const val ROWS = 14
-        const val MIN_SAMPLES = 8
     }
+}
+
+/** Offsets further than this from the plane are other objects, not the surface itself. */
+internal const val INLIER_LIMIT_METRES = 0.25f
+internal const val MIN_INLIER_SAMPLES = 8
+
+/** Median of the samples that plausibly lie on the surface, or null if too few do. */
+internal fun robustFit(offsets: List<Float>): FloorDepthProbe.Result? {
+    val inliers = offsets.filter { kotlin.math.abs(it) <= INLIER_LIMIT_METRES }
+    if (inliers.size < MIN_INLIER_SAMPLES) return null
+    return FloorDepthProbe.Result(median(inliers), inliers.size, inliers.size.toFloat() / offsets.size)
 }
 
 /**

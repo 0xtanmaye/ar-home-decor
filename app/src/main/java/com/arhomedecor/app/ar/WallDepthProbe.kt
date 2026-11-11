@@ -65,8 +65,7 @@ class WallDepthProbe {
             val cameraDistance = dot(floatArrayOf(origin[0] - plane.point[0], origin[1] - plane.point[1], origin[2] - plane.point[2]), plane.normal)
             offsets += planeOffsetFromRealSurface(cameraDistance, planeDepth, realDepth)
         }
-        if (offsets.size < MIN_SAMPLES) return null
-        return FloorDepthProbe.Result(median(offsets), offsets.size)
+        return robustFit(offsets)
     }
 
     private class WallPlane(val point: FloatArray, val normal: FloatArray, val along: FloatArray, val outline: FloatArray) {
@@ -96,6 +95,5 @@ class WallDepthProbe {
     private companion object {
         const val COLUMNS = 8
         const val ROWS = 14
-        const val MIN_SAMPLES = 8
     }
 }

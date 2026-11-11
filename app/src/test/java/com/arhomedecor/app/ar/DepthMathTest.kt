@@ -44,6 +44,22 @@ class DepthMathTest {
     }
 
     @Test
+    fun robustFitIgnoresObjectsInFrontOfTheSurface() {
+        // 10 samples on the floor around +1 cm, 6 hitting a bed 50 cm in front of it.
+        val onFloor = List(10) { 0.005f + it * 0.001f }
+        val onBed = List(6) { -0.5f }
+        val fit = robustFit(onFloor + onBed)!!
+        assertEquals(0.0095f, fit.offsetMetres, 1e-6f)
+        assertEquals(10, fit.samples)
+        assertEquals(10f / 16f, fit.inlierFraction, 1e-6f)
+    }
+
+    @Test
+    fun robustFitNeedsEnoughSamplesOnTheSurface() {
+        assertEquals(null, robustFit(List(7) { 0.01f } + List(20) { -0.6f }))
+    }
+
+    @Test
     fun medianIgnoresOutliers() {
         assertEquals(0.02f, median(listOf(0.01f, 0.02f, 0.03f, 5f, -4f)), 1e-6f)
         assertEquals(0.025f, median(listOf(0.03f, 0.02f)), 1e-6f)

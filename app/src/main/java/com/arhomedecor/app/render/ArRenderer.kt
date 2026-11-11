@@ -21,6 +21,7 @@ import com.google.android.filament.android.UiHelper
 import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.Gltfio
 import com.google.ar.core.Frame
+import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
@@ -73,8 +74,11 @@ class ArRenderer(
 
     val planeCounts: PlaneCounts get() = planeRenderer.counts
 
-    /** World-space height of the floor, or null until one is found. */
+    /** World-space height of the floor nearest the camera, or null until one is found. */
     val floorY: Float? get() = planeRenderer.floorY
+
+    /** How a tracked ARCore plane was classified in the last frame (null if not drawn). */
+    fun planeKind(plane: Plane): PlaneKind? = planeRenderer.kindOf(plane)
 
     /** World-space height of the ceiling, or null if none has been detected. */
     val ceilingY: Float? get() = planeRenderer.ceilingY
@@ -149,7 +153,7 @@ class ArRenderer(
             camera.setModelMatrix(cameraModelMatrix)
         }
 
-        planeRenderer.update(session, frame, content.walls)
+        planeRenderer.update(session, frame, content.walls, depth.available, arCamera.pose, frameTimeNanos)
         referenceCube.place(content.referenceCubePose)
         wallMarker.place(content.wallMarkerPose)
 
