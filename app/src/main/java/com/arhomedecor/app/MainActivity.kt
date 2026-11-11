@@ -1,6 +1,7 @@
 package com.arhomedecor.app
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -24,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.arhomedecor.app.ar.ArActivity
 import com.arhomedecor.app.device.AppMode
 import com.arhomedecor.app.device.DepthSupport
 import com.arhomedecor.app.device.DeviceCapabilities
@@ -80,6 +83,16 @@ private fun DeviceCheckScreen(modifier: Modifier = Modifier) {
             Text("ARCore: ${caps.arCoreAvailability}")
             Text("Depth API: ${describe(caps.depth)}")
             Text("Mode: ${describe(caps.mode)}", style = MaterialTheme.typography.titleMedium)
+            when (caps.mode) {
+                AppMode.LIVE_AR, AppMode.NEEDS_ARCORE_INSTALL -> Button(
+                    onClick = { context.startActivity(Intent(context, ArActivity::class.java)) },
+                ) {
+                    // ArActivity asks Play Store to install/update ARCore when needed.
+                    Text(if (caps.mode == AppMode.LIVE_AR) "Start AR" else "Install ARCore and start")
+                }
+                AppMode.PHOTO_MODE -> Text("Photo mode will be available in a later version.")
+                AppMode.CHECKING -> Unit
+            }
         }
     }
 }
