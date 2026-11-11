@@ -1,15 +1,30 @@
 package com.arhomedecor.app.device
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+
+enum class DepthSupport {
+    SUPPORTED,
+    NOT_SUPPORTED,
+
+    /** ARCore can't open a session to check without camera access. */
+    NEEDS_CAMERA_PERMISSION,
+
+    /** No live AR on this device, so depth doesn't apply. */
+    NOT_APPLICABLE,
+    CHECK_FAILED,
+}
 
 data class DeviceCapabilities(
     val model: String,
@@ -18,8 +33,7 @@ data class DeviceCapabilities(
     val glEsVersion: String,
     val arCoreAvailability: ArCoreApk.Availability,
     val mode: AppMode,
-    /** Null when it could not be checked (ARCore missing or session creation failed). */
-    val depthSupported: Boolean?,
+    val depth: DepthSupport,
 )
 
 object DeviceCapabilityChecker {
@@ -30,7 +44,11 @@ object DeviceCapabilityChecker {
     suspend fun check(context: Context): DeviceCapabilities {
         val availability = pollArCoreAvailability(context)
         val mode = appModeFor(availability)
-        val depth = if (mode == AppMode.LIVE_AR) checkDepthSupport(context) else null
+        val depth = when {
+            mode != AppMode.LIVE_AR -> DepthSupport.NOT_APPLICABLE
+            !hasCameraPermission(context) -> DepthSupport.NEEDS_CAMERA_PERMISSION
+            else -> checkDepthSupport(context)
+        }
 
         return DeviceCapabilities(
             model = "${Build.MANUFACTURER} ${Build.MODEL}",
@@ -39,9 +57,13 @@ object DeviceCapabilityChecker {
             glEsVersion = glEsVersion(context),
             arCoreAvailability = availability,
             mode = mode,
-            depthSupported = depth,
+            depth = depth,
         ).also { Log.i(TAG, it.toString()) }
     }
+
+    fun hasCameraPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
 
     /** checkAvailability() can report UNKNOWN_CHECKING at first, so poll until it settles. */
     private suspend fun pollArCoreAvailability(context: Context): ArCoreApk.Availability {
@@ -55,17 +77,21 @@ object DeviceCapabilityChecker {
         return availability
     }
 
-    private suspend fun checkDepthSupport(context: Context): Boolean? = withContext(Dispatchers.Default) {
+    private suspend fun checkDepthSupport(context: Context): DepthSupport = withContext(Dispatchers.Default) {
         try {
             val session = Session(context)
             try {
-                session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+                if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                    DepthSupport.SUPPORTED
+                } else {
+                    DepthSupport.NOT_SUPPORTED
+                }
             } finally {
                 session.close()
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not create ARCore session to check depth support", e)
-            null
+            DepthSupport.CHECK_FAILED
         }
     }
 

@@ -1,9 +1,12 @@
 package com.arhomedecor.app
 
+import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.arhomedecor.app.device.AppMode
+import com.arhomedecor.app.device.DepthSupport
 import com.arhomedecor.app.device.DeviceCapabilities
 import com.arhomedecor.app.device.DeviceCapabilityChecker
 
@@ -43,9 +47,24 @@ class MainActivity : ComponentActivity() {
 private fun DeviceCheckScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var capabilities by remember { mutableStateOf<DeviceCapabilities?>(null) }
+    // The check runs once the camera permission question has been answered either way.
+    var permissionResolved by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { permissionResolved = true }
 
     LaunchedEffect(Unit) {
-        capabilities = DeviceCapabilityChecker.check(context.applicationContext)
+        if (DeviceCapabilityChecker.hasCameraPermission(context)) {
+            permissionResolved = true
+        } else {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    LaunchedEffect(permissionResolved) {
+        if (permissionResolved) {
+            capabilities = DeviceCapabilityChecker.check(context.applicationContext)
+        }
     }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -59,7 +78,7 @@ private fun DeviceCheckScreen(modifier: Modifier = Modifier) {
             Text("Android ${caps.androidVersion} (API ${caps.apiLevel})")
             Text("OpenGL ES ${caps.glEsVersion}")
             Text("ARCore: ${caps.arCoreAvailability}")
-            Text("Depth API: ${caps.depthSupported?.let { if (it) "supported" else "not supported" } ?: "unknown"}")
+            Text("Depth API: ${describe(caps.depth)}")
             Text("Mode: ${describe(caps.mode)}", style = MaterialTheme.typography.titleMedium)
         }
     }
@@ -70,4 +89,12 @@ private fun describe(mode: AppMode): String = when (mode) {
     AppMode.LIVE_AR -> "live AR available"
     AppMode.NEEDS_ARCORE_INSTALL -> "install or update Google Play Services for AR"
     AppMode.PHOTO_MODE -> "photo mode (live AR not supported on this device)"
+}
+
+private fun describe(depth: DepthSupport): String = when (depth) {
+    DepthSupport.SUPPORTED -> "supported"
+    DepthSupport.NOT_SUPPORTED -> "not supported"
+    DepthSupport.NEEDS_CAMERA_PERMISSION -> "unknown (camera permission needed)"
+    DepthSupport.NOT_APPLICABLE -> "not applicable"
+    DepthSupport.CHECK_FAILED -> "check failed"
 }
