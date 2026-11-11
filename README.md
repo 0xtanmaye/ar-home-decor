@@ -40,3 +40,4 @@ adb shell am start -n com.arhomedecor.app/.MainActivity
 | `app/src/main/materials/` | Filament material sources |
 | `gradle/libs.versions.toml` | Dependency versions |
 | `tools/` | Development helper scripts |
+| `docs/testing-guide.md` | How to scan a room, read the debug panel and run accuracy checks |
