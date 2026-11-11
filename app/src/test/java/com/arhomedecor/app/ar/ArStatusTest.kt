@@ -23,6 +23,15 @@ class ArStatusTest {
     }
 
     @Test
+    fun mapOnHoldTellsTheUserHowToRecover() {
+        val status = tracking.copy(floors = 0, mapOnHold = true)
+        assertEquals(MAP_ON_HOLD_HINT, hintFor(status, 50))
+        // While the camera itself is lost, the tracking reason is more useful.
+        val lost = status.copy(tracking = TrackingState.PAUSED, failureReason = TrackingFailureReason.EXCESSIVE_MOTION)
+        assertEquals("Move the phone more slowly.", hintFor(lost, 50))
+    }
+
+    @Test
     fun trackingFailureExplainsWhatToDo() {
         val status = ArStatus(tracking = TrackingState.PAUSED, failureReason = TrackingFailureReason.INSUFFICIENT_LIGHT)
         assertEquals("Too dark: turn on more lights.", hintFor(status, 50))

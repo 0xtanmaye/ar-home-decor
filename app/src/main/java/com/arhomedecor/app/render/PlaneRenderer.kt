@@ -147,6 +147,17 @@ class PlaneRenderer(
         private set
 
     /**
+     * Planes ARCore has put on hold. This happens when it loses its place and starts a fresh
+     * map: the old planes come back if the camera sees an already-mapped area again.
+     */
+    var pausedPlanes = 0
+        private set
+
+    /** ARCore vertical planes hidden because they lie on a marked wall. */
+    var planesOnMarkedWalls = 0
+        private set
+
+    /**
      * [ndcToUv] maps screen NDC to depth-image UV (see [ndcToUvAffine]).
      * Pass [enabled] = false when there is no depth image; planes are then drawn unchecked.
      */
@@ -176,8 +187,17 @@ class PlaneRenderer(
         nowNanos: Long,
     ) {
         val updated = frame.getUpdatedTrackables(Plane::class.java).toHashSet()
-        val tracked = session.getAllTrackables(Plane::class.java)
-            .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
+        val allPlanes = session.getAllTrackables(Plane::class.java).filter { it.subsumedBy == null }
+        val tracked = allPlanes.filter { it.trackingState == TrackingState.TRACKING }
+        pausedPlanes = allPlanes.count { it.trackingState == TrackingState.PAUSED }
+
+        val markedWallPlanes = manualWalls
+            .filter { it.anchor.trackingState == TrackingState.TRACKING }
+            .map { wall ->
+                val pose = wall.anchor.pose
+                WallPlaneWorld(pose.translation, pose.rotateVector(wall.normal), pose.rotateVector(wall.alongWall), wall.outline[0], wall.outline[2])
+            }
+        var onMarkedWalls = 0
 
         val upward = tracked.filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
         val upwardInfo = upward.map { it.horizontalInfo() }
@@ -212,6 +232,14 @@ class PlaneRenderer(
         for (plane in tracked) {
             val pose = plane.centerPose
             val kind = newKinds.getValue(plane)
+            if (kind == PlaneKind.WALL && markedWallPlanes.isNotEmpty()) {
+                val normal = pose.rotateVector(UP) // a plane's local Y axis is its normal
+                val radius = plane.outlineRadius()
+                if (markedWallPlanes.any { liesOnWall(pose.translation, normal, radius, it) }) {
+                    onMarkedWalls++
+                    continue // not visible: hidden by the loop below
+                }
+            }
             val mesh = meshes.getOrPut(plane) { createMesh() }
             val rebuildDue = plane in updated && nowNanos - mesh.lastBuildNanos >= REBUILD_INTERVAL_NANOS
             // With depth, the outline is enlarged by an amount that depends on the kind.
@@ -261,6 +289,7 @@ class PlaneRenderer(
         }
         counts = PlaneCounts(floors, raised.size, walls, ceilings, marked)
         raisedSurfaceHeights = raised.sorted()
+        planesOnMarkedWalls = onMarkedWalls
 
         val markedSet = manualWalls.toHashSet()
         var discarded = 0
@@ -305,13 +334,17 @@ class PlaneRenderer(
 
     private fun Plane.horizontalInfo(): HorizontalPlaneInfo {
         val pose = centerPose
+        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), outlineRadius())
+    }
+
+    /** Outline vertices are relative to the plane's centre, so the longest is the radius. */
+    private fun Plane.outlineRadius(): Float {
         val polygon = polygon
         var radius = 0f
-        // Outline vertices are relative to the plane's centre, so their length is the radius.
         for (i in 0 until polygon.remaining() / 2) {
             radius = maxOf(radius, hypot(polygon.get(i * 2), polygon.get(i * 2 + 1)))
         }
-        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), radius)
+        return radius
     }
 
     private fun show(mesh: PlaneMesh, pose: Pose) {

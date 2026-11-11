@@ -44,7 +44,15 @@ data class ArStatus(
     val error: String? = null,
     /** A short-lived message about something that just happened, e.g. a tracking reset. */
     val notice: String? = null,
+    /**
+     * ARCore lost its place and has put earlier surfaces and marks on hold; they return when
+     * the camera sees an already-scanned area.
+     */
+    val mapOnHold: Boolean = false,
 )
+
+const val MAP_ON_HOLD_HINT =
+    "Lost track of part of the room. Point the camera back at an area you've already scanned to restore it."
 
 const val MAP_RESET_NOTICE = "Tracking was reset, so detected surfaces were cleared. Scan the floor again."
 const val WALL_TAPS_TOO_CLOSE_NOTICE = "Those points are too close together. Tap further along the wall."
@@ -63,6 +71,7 @@ fun trackingLabel(status: ArStatus): String = when (status.tracking) {
 fun hintFor(status: ArStatus, cubeEdgeCentimetres: Int): String {
     status.error?.let { return it }
     status.notice?.let { return it }
+    if (status.tracking == TrackingState.TRACKING && status.mapOnHold) return MAP_ON_HOLD_HINT
     if (status.tracking != TrackingState.TRACKING) {
         return when (status.failureReason) {
             TrackingFailureReason.INSUFFICIENT_LIGHT -> "Too dark: turn on more lights."

@@ -2,8 +2,10 @@ package com.arhomedecor.app.render
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WallGeometryTest {
@@ -84,5 +86,40 @@ class WallGeometryTest {
         val wallNormal = floatArrayOf(0f, 0f, 1f)
         assertNull(intersectRayPlane(origin, floatArrayOf(0f, 0f, 1f), wallPoint, wallNormal))
         assertNull(intersectRayPlane(origin, floatArrayOf(1f, 0f, 0f), wallPoint, wallNormal))
+    }
+
+    // Marked wall along x at z = -2, facing +z, spanning x = -2..2.
+    private val markedWall = WallPlaneWorld(
+        point = floatArrayOf(0f, 0f, -2f),
+        normal = floatArrayOf(0f, 0f, 1f),
+        along = floatArrayOf(1f, 0f, 0f),
+        uMin = -2f,
+        uMax = 2f,
+    )
+
+    @Test
+    fun curtainHangingInFrontOfAMarkedWallLiesOnIt() {
+        // 20 cm out from the wall, facing the room (ARCore may report either normal direction).
+        assertTrue(liesOnWall(floatArrayOf(1f, 1.2f, -1.8f), floatArrayOf(0f, 0f, 1f), 0.5f, markedWall))
+        assertTrue(liesOnWall(floatArrayOf(1f, 1.2f, -1.8f), floatArrayOf(0f, 0f, -1f), 0.5f, markedWall))
+    }
+
+    @Test
+    fun wardrobeWellInFrontOfTheWallIsNotOnIt() {
+        assertFalse(liesOnWall(floatArrayOf(0f, 1f, -1.4f), floatArrayOf(0f, 0f, 1f), 0.6f, markedWall))
+    }
+
+    @Test
+    fun perpendicularWallIsNotOnIt() {
+        // A side wall meeting the marked wall at the corner.
+        assertFalse(liesOnWall(floatArrayOf(2f, 1.2f, -1.5f), floatArrayOf(1f, 0f, 0f), 0.5f, markedWall))
+    }
+
+    @Test
+    fun planeBeyondTheMarkedWallsEndIsNotOnIt() {
+        // Same plane as the wall, but 3 m past its end (radius 0.4 m doesn't reach back).
+        assertFalse(liesOnWall(floatArrayOf(5f, 1.2f, -2f), floatArrayOf(0f, 0f, 1f), 0.4f, markedWall))
+        // Overlapping the end does count.
+        assertTrue(liesOnWall(floatArrayOf(2.3f, 1.2f, -2f), floatArrayOf(0f, 0f, 1f), 0.4f, markedWall))
     }
 }

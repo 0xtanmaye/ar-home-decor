@@ -87,6 +87,12 @@ class ArRenderer(
     /** Planes ARCore permanently discarded during the last rendered frame. */
     val planesDiscardedLastFrame: Int get() = planeRenderer.discardedLastUpdate
 
+    /** Planes ARCore has on hold after losing its place (see [PlaneRenderer.pausedPlanes]). */
+    val pausedPlanes: Int get() = planeRenderer.pausedPlanes
+
+    /** ARCore wall detections hidden because they lie on a marked wall. */
+    val planesOnMarkedWalls: Int get() = planeRenderer.planesOnMarkedWalls
+
     init {
         view.setScene(scene)
         view.setCamera(camera)

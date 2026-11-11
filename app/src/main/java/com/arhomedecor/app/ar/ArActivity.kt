@@ -77,6 +77,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private var lastTrackingState: TrackingState? = null
     private var lastFailureReason: TrackingFailureReason? = null
     private var visiblePlanes = 0
+    private var mapOnHold = false
     private var lastFrameNanos = 0L
     private var notice: String? = null
     private var noticeNanos = 0L
@@ -374,6 +375,20 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
             }
         }
         visiblePlanes = planesNow
+
+        // ARCore can lose its place without the camera ever reporting lost tracking: it starts
+        // a fresh map and puts the old planes and anchors on hold until it recognises the area.
+        val pausedMarks = walls.count { it.anchor.trackingState == TrackingState.PAUSED } +
+            (if (cubeAnchor?.trackingState == TrackingState.PAUSED) 1 else 0)
+        val onHold = state == TrackingState.TRACKING &&
+            (pausedMarks > 0 || renderer.pausedPlanes >= MIN_PAUSED_PLANES_FOR_HOLD)
+        if (onHold != mapOnHold) {
+            Log.w(
+                EVENT_TAG,
+                if (onHold) "map on hold: ${renderer.pausedPlanes} planes and $pausedMarks marks paused" else "map restored",
+            )
+            mapOnHold = onHold
+        }
     }
 
     /** Floor or table/bed, within its detected outline (the reference cube needs real support). */
@@ -436,6 +451,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 wallOffsetMetres = wallProbeResult?.offsetMetres,
                 wallFitInliers = wallProbeResult?.inlierFraction,
                 notice = notice?.takeIf { frameTimeNanos - noticeNanos < NOTICE_DURATION_NANOS },
+                mapOnHold = mapOnHold,
             )
         }
 
@@ -454,6 +470,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     "floorFitSamples=${probe?.samples ?: 0} " +
                     "floorFitInliers=${probe?.let { String.format(Locale.US, "%.2f", it.inlierFraction) } ?: "none"} " +
                     "markedWalls=${counts.markedWalls} " +
+                    "wallsOnMarked=${renderer.planesOnMarkedWalls} " +
+                    "pausedPlanes=${renderer.pausedPlanes} " +
                     "wallFit=${wallProbeResult?.let { String.format(Locale.US, "%+.3f", it.offsetMetres) } ?: "none"} " +
                     "wallFitSamples=${wallProbeResult?.samples ?: 0} " +
                     "wallFitInliers=${wallProbeResult?.let { String.format(Locale.US, "%.2f", it.inlierFraction) } ?: "none"} " +
@@ -480,6 +498,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         const val NOTICE_DURATION_NANOS = 5_000_000_000L
         const val LOG_INTERVAL_NANOS = 1_000_000_000L
         const val DEFAULT_WALL_HEIGHT_METRES = 2.8f
+
+        /** A single paused plane can be a passing glitch; several mean the map is on hold. */
+        const val MIN_PAUSED_PLANES_FOR_HOLD = 3
         const val WALL_MARGIN_METRES = 0.3f
         const val WALL_MARGIN_WITH_DEPTH_METRES = 3.0f
         val CUBE_EDGE_CENTIMETRES = (ArRenderer.REFERENCE_CUBE_EDGE_METRES * 100).roundToInt()

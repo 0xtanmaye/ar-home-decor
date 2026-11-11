@@ -84,3 +84,32 @@ internal fun intersectRayPlane(
 }
 
 internal fun dot(a: FloatArray, b: FloatArray) = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+/** ARCore vertical planes this far in front of or behind a marked wall count as lying on it. */
+internal const val ON_WALL_DISTANCE_METRES = 0.35f
+
+/** ...if they also face within about 25 degrees of the same direction (cos 25° ≈ 0.9). */
+internal const val ON_WALL_MIN_NORMAL_DOT = 0.9f
+
+/** A marked wall's plane in world space, with the extent of its rectangle along the wall. */
+internal class WallPlaneWorld(
+    val point: FloatArray,
+    val normal: FloatArray,
+    val along: FloatArray,
+    val uMin: Float,
+    val uMax: Float,
+)
+
+/**
+ * Whether an ARCore-detected vertical plane (centre, normal, outline radius) lies on a marked
+ * wall: parallel to it, close to it, and within its length. Those are textured things on the
+ * wall (curtains, switchboards, posters) that ARCore reported as walls; the marked wall
+ * already covers them.
+ */
+internal fun liesOnWall(center: FloatArray, normal: FloatArray, radius: Float, wall: WallPlaneWorld): Boolean {
+    if (kotlin.math.abs(dot(normal, wall.normal)) < ON_WALL_MIN_NORMAL_DOT) return false
+    val offset = floatArrayOf(center[0] - wall.point[0], center[1] - wall.point[1], center[2] - wall.point[2])
+    if (kotlin.math.abs(dot(offset, wall.normal)) > ON_WALL_DISTANCE_METRES) return false
+    val u = dot(offset, wall.along)
+    return u + radius >= wall.uMin && u - radius <= wall.uMax
+}

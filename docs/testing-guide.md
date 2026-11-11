@@ -57,6 +57,18 @@ Record every result in `docs/experiments/` with: date, room, lighting, phone, di
 - **Cube size:** place the 50 cm cube next to a real reference (a tape laid on the floor, or A4 sheets: 21.0 × 29.7 cm). Look from directly above and compare the edges.
 - **Drift:** place the cube on a tile corner, walk around the room for 60 seconds, return to the same spot and measure how far the cube has moved from the corner.
 
+## If surfaces or marks disappear
+
+ARCore sometimes loses its place, for example after fast movement or while pointed at a blank wall. It then starts a fresh map and puts everything found so far on hold, even though the panel still says `tracking`. The hint at the bottom then reads *"Lost track of part of the room…"*.
+
+- Point the camera back at an area you've already scanned and hold it there for a few seconds. When ARCore recognises it, the old surfaces and marks come back.
+- If they don't return after about 10 seconds of looking around the scanned area, reopen the AR screen and scan again.
+
+## Known limitations
+
+- **Walls without texture** aren't detected automatically; mark them by hand.
+- **Doors, curtains, switchboards and other flat things on a wall** count as "wall" geometrically (they are flat and vertical). Where ARCore detects them on a marked wall they are hidden, because the marked wall replaces them. Telling them apart from paintable wall needs the segmentation model planned for the wall-paint stage.
+
 ## Common mistakes
 
 - Tapping before the panel says `tracking`: nothing is placed.
