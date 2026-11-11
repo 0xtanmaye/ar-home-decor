@@ -404,7 +404,10 @@ before this (`rec-….mp4`) are left alone.
   A white line marks ARCore's own outline.
 
 Logcat tags: `ArStats` (once a second), `ArEvents` (tracking and map events), `ArPlanes`
-(per-plane classification changes), `ArRecording`.
+(per-plane classification changes), `ArSurfaces` (once a second per floor and raised surface:
+how much of its grid lies inside ARCore's outline or in the margin beyond it, how much measured
+depth confirmed or refuted, and how much of what is on screen is drawn although this frame's
+depth sees something lower there), `ArRecording`.
 
 ### Publishing a test build for the team
 

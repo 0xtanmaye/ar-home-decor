@@ -596,6 +596,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     }} " +
                     "frameTs=${frame.timestamp}",
             )
+            renderer.logDrawnAreas(camera)
             frameCpuNanosTotal = 0L
             frameCpuNanosMax = 0L
             framesTimed = 0

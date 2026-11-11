@@ -20,6 +20,7 @@ import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.Gltfio
+import com.google.ar.core.Camera
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
@@ -74,6 +75,7 @@ class ArRenderer(
     private val indirectLight: IndirectLight
 
     private val projection = FloatArray(16)
+    private val viewMatrix = FloatArray(16)
     private val projectionDouble = DoubleArray(16)
     private val cameraModelMatrix = FloatArray(16)
     private val modelMatrix = FloatArray(16)
@@ -139,6 +141,16 @@ class ArRenderer(
 
         uiHelper.setRenderCallback(this)
         uiHelper.attachTo(surfaceView)
+    }
+
+    /**
+     * Logs where each floor's and raised surface's grid is drawn and on what evidence (tag
+     * ArSurfaces), for the frame last drawn with [camera].
+     */
+    fun logDrawnAreas(camera: Camera) {
+        if (!depth.available || camera.trackingState != TrackingState.TRACKING) return
+        camera.displayOrientedPose.inverse().toMatrix(viewMatrix, 0)
+        planeRenderer.logDrawnAreas(viewMatrix, camera.pose.ty(), projection, cameraBackground.ndcToUv, depth)
     }
 
     /** Development aid: colour planes by the depth check's result instead of drawing grids. */

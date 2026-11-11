@@ -54,6 +54,8 @@ class PlaneRenderer(
         var outdated = false
         /** The outline as drawn, in grid coordinates (world x, z for horizontal planes). */
         var drawnGridOutline = FloatArray(0)
+        /** ARCore's own outline, before enlarging, in grid coordinates. */
+        var arcoreGridOutline = FloatArray(0)
 
         // Coverage map texture (see SurfaceCoverage) and the world rectangle it spans.
         var coverageTexture: Texture? = null
@@ -775,14 +777,8 @@ class PlaneRenderer(
         }
 
         val enlarged = dilateConvexOutline(outline, dilation)
-        mesh.drawnGridOutline = FloatArray(enlarged.size).also { mapped ->
-            for (i in 0 until vertexCount) {
-                val u = enlarged[i * 2]
-                val v = enlarged[i * 2 + 1]
-                mapped[i * 2] = grid[0] * u + grid[1] * v + grid[2]
-                mapped[i * 2 + 1] = grid[3] * u + grid[4] * v + grid[5]
-            }
-        }
+        mesh.drawnGridOutline = mapOutline(enlarged, grid)
+        mesh.arcoreGridOutline = mapOutline(outline, grid)
         val opaque = insetConvexOutline(enlarged, feather)
         val rings = arrayOf(enlarged, opaque, if (dilation > feather) outline else opaque)
         val margin = if (dilation > 0f) 1f else 0f
@@ -829,6 +825,45 @@ class PlaneRenderer(
         return true
     }
 
+    /** (u, v) pairs mapped by a two-row affine [grid] map (see [gridFromPlaneLocal]). */
+    private fun mapOutline(outline: FloatArray, grid: FloatArray): FloatArray = FloatArray(outline.size).also { mapped ->
+        for (i in 0 until outline.size / 2) {
+            val u = outline[i * 2]
+            val v = outline[i * 2 + 1]
+            mapped[i * 2] = grid[0] * u + grid[1] * v + grid[2]
+            mapped[i * 2 + 1] = grid[3] * u + grid[4] * v + grid[5]
+        }
+    }
+
+    /**
+     * Logs, for each drawn floor and raised surface, where its grid is drawn and on what evidence
+     * (see [measureDrawnArea]), to find out from a log why a grid appeared somewhere it
+     * shouldn't. [view] (world to view) and [projection] are the matrices the frame was drawn
+     * with, [cameraY] the camera's height, [ndcToUv] the screen-to-depth-image map and [depth]
+     * the latest depth image.
+     */
+    fun logDrawnAreas(view: FloatArray, cameraY: Float, projection: FloatArray, ndcToUv: FloatArray, depth: DepthTexture) {
+        if (!Log.isLoggable(AREA_TAG, Log.INFO)) return
+        for ((key, mesh) in meshes) {
+            val plane = key as? Plane ?: continue
+            val kind = mesh.kind
+            if (!mesh.inScene || (kind != PlaneKind.FLOOR && kind != PlaneKind.RAISED_SURFACE)) continue
+            val surfaceY = mesh.builtPose?.ty() ?: continue
+            val planeCoverage = coverage[plane]
+            val area = measureDrawnArea(
+                mesh.arcoreGridOutline,
+                mesh.drawnGridOutline,
+                checksBehindInside = kind == PlaneKind.RAISED_SURFACE,
+                step = AREA_SAMPLE_METRES,
+                coverageAt = { x, z -> planeCoverage?.valueAt(x, z) ?: 0.5f },
+                depthAt = { x, z ->
+                    depthVerdict(x, surfaceY, z, view, cameraY, projection, ndcToUv, TOLERANCE_METRES, depth::depthAt)
+                },
+            )
+            Log.i(AREA_TAG, "P${idOf(plane)} $kind ${area.describe()}")
+        }
+    }
+
     /** [capacity] is the number of outline vertices; each one becomes a vertex in every ring. */
     private fun allocateBuffers(mesh: PlaneMesh, capacity: Int) {
         mesh.vertexBuffer = VertexBuffer.Builder()
@@ -858,6 +893,10 @@ class PlaneRenderer(
 
     private companion object {
         const val EVENT_TAG = "ArPlanes"
+        const val AREA_TAG = "ArSurfaces"
+
+        /** Drawn areas are sampled every other coverage cell: plenty for a log, and quick. */
+        const val AREA_SAMPLE_METRES = 2 * COVERAGE_CELL_METRES
         val PLANE_AXIS_X = floatArrayOf(1f, 0f, 0f)
         val PLANE_AXIS_Z = floatArrayOf(0f, 0f, 1f)
 
