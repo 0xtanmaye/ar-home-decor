@@ -32,8 +32,6 @@ Furniture placement and wall paint come in later versions.
 - **An Android phone that supports Google Play Services for AR (ARCore).** Check yours in
   Google's [list of supported devices](https://developers.google.com/ar/devices). It needs
   Android 7.0 or newer. Most recent mid-range and flagship phones are on the list.
-- **Access to this GitHub repository.** It is private: send your GitHub username to the
-  repository owner, then accept the invitation that GitHub emails you.
 - **Only if you want to build the app yourself (section 3):** a Windows, macOS or Linux computer
   with about 15 GB of free disk space, and a USB cable that carries data (not a charge-only
   cable).
@@ -43,8 +41,8 @@ Furniture placement and wall paint come in later versions.
 This is the easiest way and needs no computer.
 
 1. On your phone, open the repository's
-   **[Releases page](https://github.com/0xtanmaye/ar-home-decor/releases)** in a browser and sign
-   in to GitHub if asked.
+   **[Releases page](https://github.com/0xtanmaye/ar-home-decor/releases)** in a browser. No
+   GitHub account is needed.
 2. Under the newest release, open **Assets** and tap the file ending in **`.apk`** to download it.
 3. Open the downloaded file, for example from the browser's downloads or the notification.
    - If the phone asks whether your browser may **install unknown apps**, tap **Settings**, turn
@@ -129,8 +127,8 @@ limitations. Please read it before a proper test session.
 
 ## 5. Reporting a problem
 
-Note down **what you did, where** (room and lighting) and **your phone model**, then send one of
-these:
+Note down **what you did, where** (room and lighting) and **your phone model**, and if you can,
+make one of these:
 
 - **A screen recording.** This is the easiest: use your phone's own screen recorder (in the quick
   settings panel), reproduce the problem, and stop.
@@ -147,10 +145,12 @@ these:
      `data/data/com.arhomedecor.app/files/recordings`, right-click the file and choose
      **Save As**.
 
-  Recordings are video of your room, so share them privately, never in a public place.
+Then open a **GitHub issue** in this repository (the **Issues** tab → **New issue**) describing
+the problem.
 
-Open a **GitHub issue** in this repository (the **Issues** tab → **New issue**) describing the
-problem and attach or link your recording. Only people with access to the repository can see it.
+> **Issues are public.** Screen and session recordings show the inside of your home, so never
+> attach them to an issue. Send them to the developer privately instead (for example in a private
+> chat, or a cloud-storage link shared only with them) and mention in the issue that you did.
 
 ## 6. Troubleshooting
 
