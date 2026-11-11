@@ -47,6 +47,11 @@ fun ArOverlay(status: ArStatus, cubeEdgeCentimetres: Int) {
                 "Height",
                 status.cameraHeightMetres?.let { String.format(Locale.US, "%.2f m above floor", it) } ?: "-",
             )
+            DebugLine("Depth", if (status.depthActive) "on" else "off")
+            DebugLine(
+                "Floor fit",
+                status.floorOffsetMetres?.let { String.format(Locale.US, "%+.1f cm vs depth", it * 100) } ?: "-",
+            )
             DebugLine(
                 "Cube",
                 status.cubeDistanceMetres?.let { String.format(Locale.US, "%.2f m away", it) } ?: "not placed",
@@ -68,7 +73,7 @@ fun ArOverlay(status: ArStatus, cubeEdgeCentimetres: Int) {
 @Composable
 private fun DebugLine(label: String, value: String) {
     Text(
-        text = "${label.padEnd(9)}$value",
+        text = "${label.padEnd(10)}$value",
         color = Color.White,
         fontFamily = FontFamily.Monospace,
         fontSize = 13.sp,

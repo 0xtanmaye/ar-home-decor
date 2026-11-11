@@ -9,6 +9,26 @@ material {
         {
             type : float,
             name : gridSpacing
+        },
+        {
+            // ARCore depth image in metres (0 = no measurement).
+            type : sampler2d,
+            name : depthTexture,
+            precision : high
+        },
+        {
+            // 1 to check each pixel against the depth image, 0 to draw unchecked.
+            type : float,
+            name : depthEnabled
+        },
+        {
+            // Affine map from screen NDC (x, y, 1) to depth-image UV.
+            type : float3,
+            name : uvFromNdcU
+        },
+        {
+            type : float3,
+            name : uvFromNdcV
         }
     ],
     requires : [
@@ -24,6 +44,23 @@ material {
 }
 
 fragment {
+    // How well the real surface (from the depth image) agrees with this plane at this pixel:
+    // 1 where they match, fading to 0 where the real surface is clearly nearer (something is in
+    // front of the plane) or farther (the plane overhangs past the real surface).
+    float depthAgreement() {
+        highp vec3 ndc = vec3(getNormalizedViewportCoord().xy * 2.0 - 1.0, 1.0);
+        highp vec2 depthUv = vec2(dot(materialParams.uvFromNdcU, ndc), dot(materialParams.uvFromNdcV, ndc));
+        highp float realDepth = texture(materialParams_depthTexture, depthUv).r;
+        if (realDepth <= 0.0) {
+            return 1.0;
+        }
+        highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
+        highp float planeDepth = -viewPosition.z;
+        // Depth from a single camera gets less precise with distance.
+        highp float tolerance = 0.05 + 0.04 * planeDepth;
+        return 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(realDepth - planeDepth));
+    }
+
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
         // uv0 holds plane-local coordinates in metres: draw a line every gridSpacing metres.
@@ -34,7 +71,8 @@ fragment {
         vec4 color = materialParams.color;
         // uv1.x fades from 0 on ARCore's outline to 1 a short distance inside it.
         float edge = getUV1().x;
-        float alpha = mix(color.a, min(color.a * 3.0, 0.9), line) * edge;
+        float visibility = materialParams.depthEnabled > 0.5 ? depthAgreement() : 1.0;
+        float alpha = mix(color.a, min(color.a * 3.0, 0.9), line) * edge * visibility;
         // Transparent blending in Filament expects premultiplied alpha.
         material.baseColor = vec4(color.rgb * alpha, alpha);
     }

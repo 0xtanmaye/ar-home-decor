@@ -60,6 +60,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private var cubeAnchor: Anchor? = null
 
     private val fpsCounter = FpsCounter()
+    private val floorProbe = FloorDepthProbe()
+    private var floorProbeResult: FloorDepthProbe.Result? = null
     private var lastStatusNanos = 0L
     private var lastLogNanos = 0L
     private val status = MutableStateFlow(ArStatus())
@@ -166,7 +168,13 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
                     lightEstimationMode = Config.LightEstimationMode.DISABLED
-                    depthMode = Config.DepthMode.DISABLED
+                    // Depth lets planes be checked against the real surface; optional, so
+                    // devices without it still get plain plane rendering.
+                    depthMode = if (newSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                        Config.DepthMode.AUTOMATIC
+                    } else {
+                        Config.DepthMode.DISABLED
+                    }
                 },
             )
             renderer.attachSession(newSession)
@@ -248,7 +256,15 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
 
         val counts = renderer.planeCounts
         val isTracking = camera.trackingState == TrackingState.TRACKING
-        val cameraHeight = renderer.floorY?.takeIf { isTracking }?.let { camera.pose.ty() - it }
+        val floorY = renderer.floorY?.takeIf { isTracking }
+        val cameraHeight = floorY?.let { camera.pose.ty() - it }
+        val logDue = frameTimeNanos - lastLogNanos >= LOG_INTERVAL_NANOS
+        if (logDue) {
+            // ~100 hit tests: once a second is plenty.
+            floorProbeResult = floorY?.let {
+                floorProbe.measure(frame, camera, renderer.depth, it, viewportWidth, viewportHeight)
+            }
+        }
         val cubeDistance = cubeAnchor?.takeIf { camera.trackingState == TrackingState.TRACKING }?.let { anchor ->
             val a = anchor.pose
             val c = camera.pose
@@ -266,19 +282,25 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 raisedSurfaces = counts.raisedSurfaces,
                 walls = counts.walls,
                 cameraHeightMetres = cameraHeight,
+                depthActive = renderer.depth.available,
+                floorOffsetMetres = floorProbeResult?.offsetMetres,
                 cubeDistanceMetres = cubeDistance,
             )
         }
 
-        if (frameTimeNanos - lastLogNanos >= LOG_INTERVAL_NANOS) {
+        if (logDue) {
             lastLogNanos = frameTimeNanos
             val s = status.value
             val raised = renderer.raisedSurfaceHeights.joinToString(",") { String.format(Locale.US, "%.2f", it) }
+            val probe = floorProbeResult
             Log.i(
                 STATS_TAG,
                 "fps=${s.fps} tracking=${s.tracking} reason=${s.failureReason} floors=${s.floors} " +
                     "raised=[$raised] walls=${s.walls} ceilings=${counts.ceilings} " +
                     "cameraHeight=${s.cameraHeightMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
+                    "depth=${renderer.depth.width}x${renderer.depth.height} " +
+                    "floorFit=${probe?.let { String.format(Locale.US, "%+.3f", it.offsetMetres) } ?: "none"} " +
+                    "floorFitSamples=${probe?.samples ?: 0} " +
                     "cube=${s.cubeDistanceMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
                     "frameTs=${frame.timestamp}",
             )

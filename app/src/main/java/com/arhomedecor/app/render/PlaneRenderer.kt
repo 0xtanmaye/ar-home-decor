@@ -7,6 +7,8 @@ import com.google.android.filament.Material
 import com.google.android.filament.MaterialInstance
 import com.google.android.filament.RenderableManager
 import com.google.android.filament.Scene
+import com.google.android.filament.Texture
+import com.google.android.filament.TextureSampler
 import com.google.android.filament.VertexBuffer
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
@@ -35,14 +37,17 @@ internal fun classifyPlane(type: Plane.Type, planeY: Float, floorY: Float?): Pla
 
 /**
  * Draws every tracked ARCore plane as a semi-transparent polygon with a metric grid.
- * Floors, raised surfaces, walls and ceilings get different colours.
+ *
+ * When a depth image is available, each grid pixel is only drawn where the measured real
+ * surface is at the same distance as the plane. That hides grid that is covered by real
+ * objects or that overhangs past the real edge of a surface.
  */
 class PlaneRenderer(
     private val engine: Engine,
     private val scene: Scene,
-    private val material: Material,
+    material: Material,
 ) {
-    private class PlaneMesh(val entity: Int, val materialInstance: MaterialInstance) {
+    private class PlaneMesh(val entity: Int) {
         lateinit var vertexBuffer: VertexBuffer
         lateinit var indexBuffer: IndexBuffer
         var capacity = 0
@@ -50,6 +55,21 @@ class PlaneRenderer(
         var inScene = false
         var kind: PlaneKind? = null
     }
+
+    /** One material instance per kind: colour differs, depth inputs are shared. */
+    private val kindMaterials: Map<PlaneKind, MaterialInstance> = PlaneKind.entries.associateWith { kind ->
+        material.createInstance().apply {
+            val (r, g, b, a) = colorFor(kind)
+            setParameter("color", r, g, b, a)
+            setParameter("gridSpacing", GRID_SPACING_METRES)
+            setParameter("depthEnabled", 0f)
+        }
+    }
+    private val depthSampler = TextureSampler(
+        TextureSampler.MinFilter.NEAREST,
+        TextureSampler.MagFilter.NEAREST,
+        TextureSampler.WrapMode.CLAMP_TO_EDGE,
+    )
 
     private val meshes = HashMap<Plane, PlaneMesh>()
     private val transform = FloatArray(16)
@@ -65,6 +85,19 @@ class PlaneRenderer(
     var raisedSurfaceHeights: List<Float> = emptyList()
         private set
 
+    /**
+     * [ndcToUv] maps screen NDC to depth-image UV (see [ndcToUvAffine]).
+     * Pass [enabled] = false when there is no depth image; planes are then drawn unchecked.
+     */
+    fun setDepthInputs(texture: Texture, ndcToUv: FloatArray, enabled: Boolean) {
+        for (instance in kindMaterials.values) {
+            instance.setParameter("depthTexture", texture, depthSampler)
+            instance.setParameter("uvFromNdcU", ndcToUv[0], ndcToUv[1], ndcToUv[2])
+            instance.setParameter("uvFromNdcV", ndcToUv[3], ndcToUv[4], ndcToUv[5])
+            instance.setParameter("depthEnabled", if (enabled) 1f else 0f)
+        }
+    }
+
     fun update(session: Session, frame: Frame) {
         val updated = frame.getUpdatedTrackables(Plane::class.java).toHashSet()
         val tracked = session.getAllTrackables(Plane::class.java)
@@ -74,6 +107,7 @@ class PlaneRenderer(
             .minOfOrNull { it.centerPose.ty() }
         floorY = floor
 
+        val renderables = engine.renderableManager
         val visible = HashSet<Plane>()
         val raised = ArrayList<Float>()
         var floors = 0
@@ -81,15 +115,14 @@ class PlaneRenderer(
         var ceilings = 0
 
         for (plane in tracked) {
-            val mesh = meshes.getOrPut(plane) { createMesh() }
-            val needsGeometry = !mesh.hasRenderable || plane in updated
-            if (needsGeometry && !updateGeometry(plane, mesh)) continue
-
             val pose = plane.centerPose
             val kind = classifyPlane(plane.type, pose.ty(), floor)
+            val mesh = meshes.getOrPut(plane) { createMesh() }
+            val needsGeometry = !mesh.hasRenderable || plane in updated
+            if (needsGeometry && !updateGeometry(plane, mesh, kind)) continue
+
             if (kind != mesh.kind) {
-                val (r, g, b, a) = colorFor(kind)
-                mesh.materialInstance.setParameter("color", r, g, b, a)
+                renderables.setMaterialInstanceAt(renderables.getInstance(mesh.entity), 0, kindMaterials.getValue(kind))
                 mesh.kind = kind
             }
             pose.toMatrix(transform, 0)
@@ -127,14 +160,12 @@ class PlaneRenderer(
     fun destroy() {
         meshes.values.forEach(::destroyMesh)
         meshes.clear()
+        kindMaterials.values.forEach(engine::destroyMaterialInstance)
     }
 
     private fun createMesh(): PlaneMesh {
         val entity = EntityManager.get().create()
-        val materialInstance = material.createInstance()
-        materialInstance.setParameter("gridSpacing", GRID_SPACING_METRES)
-
-        val mesh = PlaneMesh(entity, materialInstance)
+        val mesh = PlaneMesh(entity)
         allocateBuffers(mesh, INITIAL_CAPACITY)
         engine.transformManager.create(entity)
         // The renderable itself is built on the first geometry update, once there is real data.
@@ -142,7 +173,7 @@ class PlaneRenderer(
     }
 
     /** Returns false if the polygon is degenerate (fewer than 3 vertices). */
-    private fun updateGeometry(plane: Plane, mesh: PlaneMesh): Boolean {
+    private fun updateGeometry(plane: Plane, mesh: PlaneMesh, kind: PlaneKind): Boolean {
         val polygon = plane.polygon
         val vertexCount = polygon.remaining() / 2
         if (vertexCount < 3) return false
@@ -198,12 +229,13 @@ class PlaneRenderer(
         if (!mesh.hasRenderable) {
             RenderableManager.Builder(1)
                 .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, mesh.vertexBuffer, mesh.indexBuffer, 0, indices.size)
-                .material(0, mesh.materialInstance)
+                .material(0, kindMaterials.getValue(kind))
                 .culling(false)
                 .castShadows(false)
                 .receiveShadows(false)
                 .build(engine, mesh.entity)
             mesh.hasRenderable = true
+            mesh.kind = kind
         } else {
             val renderables = engine.renderableManager
             renderables.setGeometryAt(
@@ -235,7 +267,6 @@ class PlaneRenderer(
         if (mesh.inScene) scene.remove(mesh.entity)
         engine.destroyEntity(mesh.entity)
         EntityManager.get().destroy(mesh.entity)
-        engine.destroyMaterialInstance(mesh.materialInstance)
         engine.destroyVertexBuffer(mesh.vertexBuffer)
         engine.destroyIndexBuffer(mesh.indexBuffer)
     }

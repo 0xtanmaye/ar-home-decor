@@ -55,6 +55,9 @@ class ArRenderer(
     private val cameraBackground = CameraBackground(engine, backgroundMaterial)
     private val planeRenderer = PlaneRenderer(engine, scene, planeMaterial)
 
+    /** Latest ARCore depth image; unavailable on devices or sessions without depth. */
+    val depth = DepthTexture(engine)
+
     private val modelLoader = ModelLoader(engine)
     private val referenceCube = modelLoader.loadGlb(context, REFERENCE_CUBE_ASSET)
     private var referenceCubeInScene = false
@@ -123,6 +126,8 @@ class ArRenderer(
         GLES30.glFlush()
 
         cameraBackground.update(frame)
+        depth.update(frame)
+        planeRenderer.setDepthInputs(depth.texture, cameraBackground.ndcToUv, depth.available)
 
         val arCamera = frame.camera
         arCamera.getProjectionMatrix(projection, 0, NEAR_METRES, FAR_METRES)
@@ -188,6 +193,7 @@ class ArRenderer(
         modelLoader.destroyAsset(referenceCube)
         modelLoader.destroy()
         planeRenderer.destroy()
+        depth.destroy()
         cameraBackground.destroy()
         engine.destroyMaterial(planeMaterial)
         engine.destroyMaterial(backgroundMaterial)

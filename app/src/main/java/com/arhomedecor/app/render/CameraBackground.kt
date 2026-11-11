@@ -39,6 +39,9 @@ class CameraBackground(private val engine: Engine, material: Material) {
     private val uvs = FloatArray(NDC_CORNERS.size)
     private var uvsValid = false
 
+    /** Affine map from screen NDC to camera texture UV (also valid for the depth image). */
+    val ndcToUv = FloatArray(6)
+
     init {
         GLES30.glGenTextures(TEXTURE_COUNT, textureIds, 0)
         for (id in textureIds) {
@@ -104,6 +107,7 @@ class CameraBackground(private val engine: Engine, material: Material) {
                 uvs,
             )
             vertexBuffer.setBufferAt(engine, 1, floatBufferOf(uvs))
+            ndcToUvAffine(uvs).copyInto(ndcToUv)
             uvsValid = true
         }
         textures[frame.cameraTextureName]?.let {
@@ -133,4 +137,22 @@ class CameraBackground(private val engine: Engine, material: Material) {
         /** Full-screen quad corners: bottom-left, bottom-right, top-left, top-right. */
         val NDC_CORNERS = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
     }
+}
+
+/**
+ * Builds the affine map from screen NDC to texture UV out of the UVs of the full-screen quad's
+ * corners (bottom-left, bottom-right, top-left, top-right, as (u, v) pairs). The camera image is
+ * only ever rotated, flipped, scaled and cropped, so three corners define the map exactly.
+ *
+ * Returns (a, b, c, d, e, f) with u = a*x + b*y + c and v = d*x + e*y + f.
+ */
+internal fun ndcToUvAffine(cornerUvs: FloatArray): FloatArray {
+    val (u00, v00) = cornerUvs[0] to cornerUvs[1] // NDC (-1, -1)
+    val (u10, v10) = cornerUvs[2] to cornerUvs[3] // NDC (1, -1)
+    val (u01, v01) = cornerUvs[4] to cornerUvs[5] // NDC (-1, 1)
+    val a = (u10 - u00) / 2f
+    val b = (u01 - u00) / 2f
+    val d = (v10 - v00) / 2f
+    val e = (v01 - v00) / 2f
+    return floatArrayOf(a, b, u00 + a + b, d, e, v00 + d + e)
 }

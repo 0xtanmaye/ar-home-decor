@@ -15,6 +15,10 @@ data class ArStatus(
     val walls: Int = 0,
     /** Height of the phone's camera above the floor, or null until a floor is found. */
     val cameraHeightMetres: Float? = null,
+    /** True when ARCore depth images are arriving (supported devices only). */
+    val depthActive: Boolean = false,
+    /** Floor plane height relative to the real floor measured by depth; positive = above. */
+    val floorOffsetMetres: Float? = null,
     /** Distance from the camera to the reference cube, or null if it hasn't been placed. */
     val cubeDistanceMetres: Float? = null,
     /** A blocking problem (e.g. ARCore missing); overrides the normal hint. */
