@@ -20,10 +20,11 @@ Furniture placement and wall paint come in later versions.
 1. [What you need](#1-what-you-need)
 2. [Install the app on your phone](#2-install-the-app-on-your-phone)
 3. [Or: build the app yourself with Android Studio](#3-or-build-the-app-yourself-with-android-studio)
-4. [Using the app](#4-using-the-app)
-5. [Reporting a problem](#5-reporting-a-problem)
-6. [Troubleshooting](#6-troubleshooting)
-7. [For developers](#7-for-developers)
+4. [Or: build the app yourself without Android Studio](#4-or-build-the-app-yourself-without-android-studio)
+5. [Using the app](#5-using-the-app)
+6. [Reporting a problem](#6-reporting-a-problem)
+7. [Troubleshooting](#7-troubleshooting)
+8. [For developers](#8-for-developers)
 
 ---
 
@@ -32,9 +33,9 @@ Furniture placement and wall paint come in later versions.
 - **An Android phone that supports Google Play Services for AR (ARCore).** Check yours in
   Google's [list of supported devices](https://developers.google.com/ar/devices). It needs
   Android 7.0 or newer. Most recent mid-range and flagship phones are on the list.
-- **Only if you want to build the app yourself (section 3):** a Windows, macOS or Linux computer
-  with about 15 GB of free disk space, and a USB cable that carries data (not a charge-only
-  cable).
+- **Only if you want to build the app yourself (sections 3 and 4):** a Windows, macOS or Linux
+  computer with free disk space (about 15 GB with Android Studio, about 3 GB without), and a USB
+  cable that carries data (not a charge-only cable) or a Wi-Fi network shared with the phone.
 
 ## 2. Install the app on your phone
 
@@ -107,7 +108,155 @@ changes. Android Studio is Google's free tool for Android apps and includes ever
 To get newer changes later, download the ZIP again (or `git pull`), open it the same way and
 click **Run ▶** again.
 
-## 4. Using the app
+## 4. Or: build the app yourself without Android Studio
+
+This is how the app is developed day to day: a terminal, Google's free Android command-line
+tools, and the phone connected by USB cable or Wi-Fi. It needs about 3 GB of disk space.
+Commands are typed (or pasted) into a terminal: **PowerShell** on Windows, **Terminal** on macOS
+and Linux.
+
+**One-time setup**
+
+Open the steps for your computer and follow them in order. The Linux steps are the ones used
+for this project; the Windows and macOS steps follow the same pattern with those systems'
+usual folders.
+
+<details>
+<summary><b>Windows</b></summary>
+
+1. **Java:** from [adoptium.net](https://adoptium.net/temurin/releases/?version=21), download the
+   **JDK 21** `.msi` installer for Windows x64 and run it. On the *Custom Setup* page, set
+   **Set JAVA_HOME variable** to *Will be installed on local hard drive*.
+2. **Android command-line tools:** on
+   [developer.android.com/studio](https://developer.android.com/studio#command-line-tools-only),
+   scroll down to **Command line tools only** and download the **Windows** zip into your
+   Downloads folder.
+3. Open **PowerShell** and paste these lines. They unzip the tools to where Android Studio would
+   put them, and tell Windows where they are:
+   ```powershell
+   $sdk = "$env:LOCALAPPDATA\Android\Sdk"
+   New-Item -ItemType Directory -Force "$sdk\cmdline-tools" | Out-Null
+   $zip = Get-ChildItem "$HOME\Downloads\commandlinetools-win-*_latest.zip" | Select-Object -First 1
+   Expand-Archive $zip.FullName "$sdk\cmdline-tools"
+   Rename-Item "$sdk\cmdline-tools\cmdline-tools" latest
+   [Environment]::SetEnvironmentVariable("ANDROID_HOME", $sdk, "User")
+   $path = [Environment]::GetEnvironmentVariable("Path", "User")
+   [Environment]::SetEnvironmentVariable("Path", "$path;$sdk\cmdline-tools\latest\bin;$sdk\platform-tools", "User")
+   ```
+4. **Close PowerShell and open a new one** (only new windows see the changes), then install the
+   parts of the Android SDK the app needs and accept Google's licences. Type `y` and press Enter
+   whenever it asks:
+   ```powershell
+   sdkmanager "platform-tools" "platforms;android-37.0"
+   sdkmanager --licenses
+   ```
+5. Check: `java -version` should mention version 21, and `adb version` should print a version.
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+1. **Java:** from [adoptium.net](https://adoptium.net/temurin/releases/?version=21), download the
+   **JDK 21** `.pkg` installer for macOS and run it: *aarch64* for Macs with Apple silicon
+   (M1 and later), *x64* for Intel Macs.
+2. **Android command-line tools:** on
+   [developer.android.com/studio](https://developer.android.com/studio#command-line-tools-only),
+   scroll down to **Command line tools only** and download the **Mac** zip (*ARM* for Apple
+   silicon, *Intel* otherwise) into your Downloads folder.
+3. Open **Terminal** and paste these lines. They unzip the tools to where Android Studio would
+   put them, and tell the terminal where they are:
+   ```bash
+   sdk="$HOME/Library/Android/sdk"
+   mkdir -p "$sdk/cmdline-tools"
+   unzip -q ~/Downloads/commandlinetools-mac*_latest.zip -d "$sdk/cmdline-tools"
+   mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+   echo 'export ANDROID_HOME="$HOME/Library/Android/sdk"' >> ~/.zshrc
+   echo 'export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"' >> ~/.zshrc
+   ```
+   If Safari already unzipped the download into a `cmdline-tools` folder, replace the `unzip`
+   and first `mv` lines with `mv ~/Downloads/cmdline-tools "$sdk/cmdline-tools/latest"`.
+4. **Close Terminal and open it again** (only new windows see the changes), then install the
+   parts of the Android SDK the app needs and accept Google's licences. Type `y` and press Enter
+   whenever it asks:
+   ```bash
+   sdkmanager "platform-tools" "platforms;android-37.0"
+   sdkmanager --licenses
+   ```
+5. Check: `java -version` should mention version 21, and `adb version` should print a version.
+
+</details>
+
+<details>
+<summary><b>Linux (Debian, Ubuntu)</b></summary>
+
+1. **Java:** `sudo apt install openjdk-21-jdk-headless unzip` (it asks for your password). If
+   your system has no `openjdk-21` package, use the JDK 21 from
+   [adoptium.net](https://adoptium.net/temurin/releases/?version=21) instead.
+2. **Android command-line tools:** on
+   [developer.android.com/studio](https://developer.android.com/studio#command-line-tools-only),
+   scroll down to **Command line tools only** and download the **Linux** zip into your Downloads
+   folder.
+3. Paste these lines into a terminal. They unzip the tools into `~/Android/Sdk`, and tell the
+   terminal where they are:
+   ```bash
+   sdk="$HOME/Android/Sdk"
+   mkdir -p "$sdk/cmdline-tools"
+   unzip -q ~/Downloads/commandlinetools-linux-*_latest.zip -d "$sdk/cmdline-tools"
+   mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+   echo 'export ANDROID_HOME="$HOME/Android/Sdk"' >> ~/.bashrc
+   echo 'export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"' >> ~/.bashrc
+   ```
+4. **Close the terminal and open a new one** (only new windows see the changes), then install
+   the parts of the Android SDK the app needs and accept Google's licences. Type `y` and press
+   Enter whenever it asks:
+   ```bash
+   sdkmanager "platform-tools" "platforms;android-37.0"
+   sdkmanager --licenses
+   ```
+5. Check: `java -version` should mention version 21, and `adb version` should print a version.
+
+</details>
+
+Then, on any system:
+
+6. Get the project as in [section 3](#3-or-build-the-app-yourself-with-android-studio), step 2
+   (**Download ZIP** and unzip it, or `git clone`).
+7. Turn on **USB debugging** on the phone as in section 3, step 5.
+
+**Installing on your phone (each time)**
+
+1. Connect the phone with the USB cable. When it asks **"Allow USB debugging?"**, tick **Always
+   allow from this computer** and tap **Allow**.
+2. Open a terminal in the project folder (the one that contains `gradlew`):
+   - Windows: open the folder in File Explorer, right-click an empty area and choose **Open in
+     Terminal**.
+   - macOS: type `cd ` (with a space) in Terminal, drag the folder onto the window, press Enter.
+   - Linux: right-click inside the folder and choose **Open in Terminal**, or use `cd`.
+3. Check that the phone is connected: `adb devices` should list it with the word `device` after
+   it. `unauthorized` means the prompt on the phone hasn't been accepted yet.
+4. Build the app and install it on the phone:
+   - Windows: `.\gradlew.bat installDebug`
+   - macOS and Linux: `./gradlew installDebug`
+
+   The first time takes 5–15 minutes, because it downloads the build tools; after that it takes
+   a minute or two. It ends with **BUILD SUCCESSFUL**.
+5. Open **AR Home Decor** on the phone. You can unplug it now: the app stays installed.
+
+To get newer changes later, download the ZIP again (or `git pull`) and repeat step 4.
+
+**Connecting over Wi-Fi instead of a cable** (Android 11 and newer; the phone and computer must
+be on the same Wi-Fi):
+
+1. On the phone: **Settings → Developer options → Wireless debugging** → turn it on.
+2. Once only: tap **Pair device with pairing code** and run `adb pair <address>` with the IP
+   address and port shown in that pop-up, then type the code it shows.
+3. On the **Wireless debugging** screen itself (not the pop-up), note the **IP address & Port**
+   and run `adb connect <address>` with it. The port changes when the phone restarts or Wi-Fi
+   reconnects; repeat this step then.
+4. `adb devices` now lists the phone: continue with step 4 above.
+
+## 5. Using the app
 
 1. Tap **Start AR** and hold the phone at chest height, pointing at the floor 1–2 m ahead.
 2. **Move the phone sideways slowly** for 5–10 seconds, for example by taking a step or sweeping
@@ -125,7 +274,7 @@ click **Run ▶** again.
 each line of the debug panel means, how to check accuracy with a tape measure, and known
 limitations. Please read it before a proper test session.
 
-## 5. Reporting a problem
+## 6. Reporting a problem
 
 Note down **what you did, where** (room and lighting) and **your phone model**, and if you can,
 make one of these:
@@ -140,10 +289,19 @@ make one of these:
      few seconds.
   3. Tap **Stop recording**. Aim for **30–60 seconds**: a replay needs the first few seconds just
      to start tracking.
-  4. To copy the recording off the phone, connect it to Android Studio (section 3), open
-     **View → Tool Windows → Device Explorer**, go to
-     `data/data/com.arhomedecor.app/files/recordings`, right-click the file and choose
-     **Save As**.
+  4. To copy the recording off the phone:
+     - **With Android Studio** (section 3): open **View → Tool Windows → Device Explorer**, go to
+       `data/data/com.arhomedecor.app/files/recordings`, right-click the file and choose
+       **Save As**.
+     - **Without Android Studio** (section 4): with the phone connected, list the recordings,
+       then copy one into the phone's **Download** folder, using its name from the list in
+       place of `rec-20261111-201051.mp4` (twice):
+       ```
+       adb shell run-as com.arhomedecor.app ls files/recordings
+       adb shell "run-as com.arhomedecor.app cat files/recordings/rec-20261111-201051.mp4 | cat > /sdcard/Download/rec-20261111-201051.mp4"
+       ```
+       It then appears in the phone's **Files** app under **Downloads**, and can be shared from
+       there. Delete it from Downloads once it has been sent.
 
 Then open a **GitHub issue** in this repository (the **Issues** tab → **New issue**) describing
 the problem.
@@ -152,7 +310,7 @@ the problem.
 > attach them to an issue. Send them to the developer privately instead (for example in a private
 > chat, or a cloud-storage link shared only with them) and mention in the issue that you did.
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | Problem | What to try |
 |---|---|
@@ -161,21 +319,27 @@ the problem.
 | The camera view stays black | Close other apps that use the camera, then leave the AR screen and open it again. |
 | Grids don't appear | Use more light, move the phone sideways more slowly, and point at a floor with some texture or pattern. |
 | Things placed earlier disappear | ARCore lost its place. Point back at an area you scanned before and hold still for a few seconds (see the testing guide). |
-| Android Studio doesn't list the phone | Check that the "Allow USB debugging?" prompt was accepted, try another cable or port, and on Windows install your phone maker's USB driver (e.g. *Samsung Android USB Driver*). |
+| Android Studio or `adb devices` doesn't list the phone | Check that the "Allow USB debugging?" prompt was accepted, try another cable or port, and on Windows install your phone maker's USB driver (e.g. *Samsung Android USB Driver*). |
+| `adb devices` shows `unauthorized` | Unlock the phone and accept the "Allow USB debugging?" prompt. If it doesn't appear, unplug and plug in again. |
 | Gradle sync failed | Check your internet connection, then **File → Sync Project with Gradle Files**. If it mentions a newer Android Gradle Plugin, update Android Studio. |
+| `java`, `sdkmanager` or `adb` is "not recognized" or "not found" | Open a new terminal window: settings from the one-time setup only apply to windows opened afterwards. If it persists, repeat setup step 3 (or reinstall Java for `java`). |
+| "SDK location not found" when building | The terminal doesn't know where the Android SDK is: open a new terminal window, or repeat setup step 3. |
+| `Permission denied` for `./gradlew` (macOS, Linux) | Run `chmod +x gradlew` once, then try again. |
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | The installed app was built on another computer. Run `adb uninstall com.arhomedecor.app`, then install again. |
 
 ---
 
-## 7. For developers
+## 8. For developers
 
-Everything above works without these steps. This section covers developing from the command line,
-without Android Studio.
+Everything above works without these steps. This section covers the project's development tools
+and conventions.
 
 ### Command-line requirements
 
-- JDK 21
-- Android SDK command-line tools with platform 37, build-tools 37.0.0 and platform-tools, and
-  `ANDROID_HOME` pointing at the SDK
+- JDK 21 and the Android SDK (`platform-tools`, `platforms;android-37.0`), with `ANDROID_HOME`
+  pointing at the SDK and its licences accepted: see
+  [section 4](#4-or-build-the-app-yourself-without-android-studio). The Android Gradle Plugin
+  downloads the build-tools version it needs on the first build.
 - `ffmpeg` (only for the screen-capture contact sheets)
 
 Gradle itself is fetched by the wrapper (`./gradlew`), pinned by version and checksum.
