@@ -66,6 +66,17 @@ class PlaneClassificationTest {
     }
 
     @Test
+    fun panelBelowADeskTopIsAFurnitureSideEvenWithoutAFloor() {
+        // Drawer fronts that start well below the top's front edge, or the part ARCore has found
+        // so far: beside the desk and entirely below its top.
+        assertTrue(isFurnitureSide(panel(floorY + 0.1f, deskY - 0.17f), listOf(desk), wasFurnitureSide = false))
+        assertTrue(isFurnitureSide(panel(floorY + 0.1f, deskY - 0.4f), listOf(desk), wasFurnitureSide = false))
+        assertEquals(PlaneKind.FURNITURE_SIDE, classifyVertical(panel(floorY + 0.1f, deskY - 0.17f), listOf(desk), null, false))
+        // Rising clearly above the desk top: a wall.
+        assertFalse(isFurnitureSide(panel(floorY + 0.1f, deskY + 0.3f), listOf(desk), wasFurnitureSide = false))
+    }
+
+    @Test
     fun lowVerticalPlaneIsHeldBackUntilItReachesWallHeight() {
         // A desk's drawer panel found before the desk top: no raised surface to match yet.
         assertEquals(PlaneKind.FURNITURE_SIDE, classifyVertical(panel(floorY + 0.1f, deskY + 0.06f), emptyList(), floorY, false))

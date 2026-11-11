@@ -134,8 +134,11 @@ internal fun polygonArea(polygon: FloatArray): Float {
     return abs(twiceArea) / 2f
 }
 
-/** A furniture side's top edge lies within this height of the raised surface it belongs to... */
-internal const val FURNITURE_TOP_MATCH_METRES = 0.15f
+/**
+ * A furniture side's top edge rises at most this far above the raised surface it belongs to
+ * (ARCore's estimates of the two heights differ a little)...
+ */
+internal const val FURNITURE_MAX_RISE_METRES = 0.15f
 
 /** ...hangs at least this far below it... */
 internal const val FURNITURE_MIN_DROP_METRES = 0.15f
@@ -144,7 +147,7 @@ internal const val FURNITURE_MIN_DROP_METRES = 0.15f
 internal const val FURNITURE_MAX_GAP_METRES = 0.4f
 
 /** Looser limits for a plane already recognised as a furniture side, so it doesn't flicker. */
-internal const val FURNITURE_TOP_MATCH_KEEP_METRES = 0.25f
+internal const val FURNITURE_MAX_RISE_KEEP_METRES = 0.25f
 internal const val FURNITURE_MAX_GAP_KEEP_METRES = 0.6f
 
 /**
@@ -185,18 +188,20 @@ internal class RaisedFootprint(val y: Float, val outline: FloatArray)
 
 /**
  * Whether a vertical plane is the side or front of a table, desk or cabinet rather than a wall:
- * its top edge meets a raised surface at that surface's height, and it extends down from there.
- * ARCore finds such panels as readily as walls (they are often more textured than plain walls),
- * but they are not surfaces anyone would paint.
+ * it is beside a raised surface, hangs down below it, and doesn't rise above it. ARCore finds
+ * such panels as readily as walls (they are often more textured than plain walls), but they are
+ * not surfaces anyone would paint.
  *
- * A wall section that happens to end at a table's height right beside the table would also
- * match; walls normally continue above furniture, so this is rare.
+ * Its top needn't reach the surface's height: a desk's drawers or a cabinet's doors often start
+ * well below the top's front edge, and ARCore may only have found part of a panel so far.
+ * Whatever is beside a table and entirely below its top is furniture, or wall hidden under it;
+ * walls continue above furniture, and ARCore extends a wall plane upwards as it sees more of it.
  */
 internal fun isFurnitureSide(side: VerticalPlaneExtent, raised: List<RaisedFootprint>, wasFurnitureSide: Boolean): Boolean {
-    val topMatch = if (wasFurnitureSide) FURNITURE_TOP_MATCH_KEEP_METRES else FURNITURE_TOP_MATCH_METRES
+    val maxRise = if (wasFurnitureSide) FURNITURE_MAX_RISE_KEEP_METRES else FURNITURE_MAX_RISE_METRES
     val maxGap = if (wasFurnitureSide) FURNITURE_MAX_GAP_KEEP_METRES else FURNITURE_MAX_GAP_METRES
     return raised.any { surface ->
-        abs(side.topY - surface.y) <= topMatch &&
+        side.topY - surface.y <= maxRise &&
             surface.y - side.bottomY >= FURNITURE_MIN_DROP_METRES &&
             segmentDistanceToPolygon(side.endA, side.endB, surface.outline) <= maxGap
     }
