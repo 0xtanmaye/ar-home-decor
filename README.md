@@ -14,6 +14,10 @@ Android app for previewing furniture and wall paint/patterns in a real room thro
 2. Pair once: `adb pair <ip>:<port>` using the code from "Pair device with pairing code".
 3. Each session: `./tools/connect-phone.sh` finds the phone on the network and connects adb.
 
+`./tools/screenshot.sh <file.png>` and `./tools/record-screen.sh <seconds> <dir>` capture the phone
+screen for review (the recorder also produces timestamped contact sheets with ffmpeg). Both only
+capture while this app is in the foreground.
+
 ## Build and run
 
 ```bash
