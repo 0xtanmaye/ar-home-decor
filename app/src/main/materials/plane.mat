@@ -22,13 +22,15 @@ material {
             name : depthEnabled
         },
         {
-            // 1 to also hide grid where the real surface is behind the plane (overhang past a
-            // table edge). 0 for floors and ceilings: inside their detected outline nothing real
-            // is behind them, so a farther reading there is a reflection (glossy tiles) or noise.
-            // In the enlarged margin beyond the outline (uv1.y = 1) the check always applies:
-            // there the surface was only assumed to continue.
+            // Inside ARCore's detected outline the plane is known to exist (ARCore tracked points
+            // on it), so depth only decides whether something covers it: readings behind it are
+            // reflections (glossy floors and table tops) or noise, and the orientation estimate
+            // is too noisy to overrule ARCore. In the margin drawn beyond the outline (uv1.y > 0)
+            // the surface was only assumed to continue, so depth must also confirm it is there:
+            // not behind, and facing the same way. 1 applies that full check everywhere, for
+            // outlines that are not ARCore's (walls marked by hand).
             type : float,
-            name : hideWhenFarther
+            name : fullCheckInside
         },
         {
             // Distance from the plane (metres) within which the real surface still counts as
@@ -95,8 +97,9 @@ fragment {
     #define DEPTH_NOISE_PER_METRE 0.02
 
     // The real surface's orientation is measured between depth pixels this far apart on each
-    // side of the one under the fragment. ARCore's depth is smooth, so a small span is enough.
-    #define NORMAL_SPAN_PIXELS 2.0
+    // side of the one under the fragment: wide enough to average out ripples in the depth of
+    // glossy or cluttered surfaces, narrow enough to keep edges.
+    #define NORMAL_SPAN_PIXELS 3.0
 
     // Width of the fade below minNormalAgreement, as a cosine.
     #define NORMAL_FADE 0.1
@@ -125,11 +128,11 @@ fragment {
         return abs(dot(normal, planeNormal)) * inversesqrt(length2);
     }
 
-    // How much of this plane pixel to draw, given the real surface seen through it:
-    // 1 where the real surface is the plane, fading to 0 where it is clearly in front of the
-    // plane (something covers it), clearly behind it (the plane overhangs a real edge; ignored
-    // for floors inside their detected outline, see hideWhenFarther), or at the plane's distance
-    // but facing another way. debugColor receives the debug view's colour.
+    // How much of this plane pixel to draw, given the real surface seen through it: 0 where
+    // something clearly covers the plane. In the margin beyond ARCore's outline (see
+    // fullCheckInside) also 0 where the real surface is clearly behind the plane (it overhangs
+    // a real edge) or at the plane's distance but facing another way. debugColor receives the
+    // debug view's colour.
     float depthVisibility(float margin, out vec3 debugColor) {
         debugColor = vec3(0.0, 1.0, 0.0);
         highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
@@ -157,20 +160,22 @@ fragment {
         highp float t = clamp(offset / (2.0 * tolerance), -1.0, 1.0);
         debugColor = vec3(max(t, 0.0), 1.0 - abs(t), max(-t, 0.0));
 
-        float behindWeight = offset < 0.0 ? max(materialParams.hideWhenFarther, margin) : 1.0;
-        if (behindWeight == 0.0) {
-            return 1.0; // a reflection in the floor, or noise
+        // Covered by something in front: applies everywhere.
+        float uncovered = 1.0 - smoothstep(tolerance, 2.0 * tolerance, offset);
+        float strictness = max(materialParams.fullCheckInside, margin);
+        if (strictness == 0.0) {
+            return uncovered;
         }
-        float visibility = 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(offset));
-        if (visibility > 0.0 && materialParams.minNormalAgreement > 0.0) {
+        float confirmed = 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(offset));
+        if (confirmed > 0.0 && materialParams.minNormalAgreement > 0.0) {
             float facing = smoothstep(
                 materialParams.minNormalAgreement - NORMAL_FADE,
                 materialParams.minNormalAgreement,
                 normalAgreement(depthUv, planeNormal));
             debugColor = mix(vec3(1.0, 1.0, 0.0), debugColor, facing);
-            visibility *= facing;
+            confirmed *= facing;
         }
-        return mix(1.0, visibility, behindWeight);
+        return mix(uncovered, confirmed, strictness);
     }
 
     void material(inout MaterialInputs material) {
@@ -181,10 +186,11 @@ fragment {
         float line = 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
 
         vec4 color = materialParams.color;
-        // uv1.x fades from 0 on the drawn outline to 1 a short distance inside it; uv1.y is 1 in
-        // the margin drawn beyond ARCore's outline, falling to 0 at that outline.
+        // uv1.x fades from 0 on the drawn outline to 1 a short distance inside it. uv1.y rises
+        // from 0 on ARCore's outline across the margin drawn beyond it; the margin's checks
+        // apply in full a few centimetres out.
         float edge = getUV1().x;
-        float margin = getUV1().y;
+        float margin = smoothstep(0.0, 0.1, getUV1().y);
         vec3 debugColor = vec3(0.0, 1.0, 0.0);
         float visibility = materialParams.depthEnabled > 0.5 ? depthVisibility(margin, debugColor) : 1.0;
         if (materialParams.debugView > 0.5) {

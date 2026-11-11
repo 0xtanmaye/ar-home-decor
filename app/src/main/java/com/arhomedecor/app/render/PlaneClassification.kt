@@ -49,7 +49,7 @@ internal const val NEIGHBOUR_GAP_METRES = 1.0f
  * A plane the camera has never been at least this high above is not a floor the user is
  * standing on: people scan with the phone at waist to eye height, so it is a table or similar.
  */
-internal const val MIN_CAMERA_HEIGHT_ABOVE_FLOOR_METRES = 0.7f
+internal const val MIN_CAMERA_HEIGHT_ABOVE_FLOOR_METRES = 0.9f
 
 /** Footprint of an upward-facing plane: centre height and position, and outline radius. */
 internal class HorizontalPlaneInfo(val y: Float, val x: Float, val z: Float, val radius: Float)
@@ -96,6 +96,42 @@ internal fun classifyUpward(
         null -> FLOOR_TOLERANCE_METRES
     }
     return if (planeY - localFloorY <= threshold) PlaneKind.FLOOR else PlaneKind.RAISED_SURFACE
+}
+
+/** Pieces of a surface within this height of a larger plane covering them are redundant... */
+internal const val REDUNDANT_HEIGHT_METRES = 0.05f
+
+/** ...when their centre lies inside that plane's outline or this close to it. */
+internal const val REDUNDANT_GAP_METRES = 0.1f
+
+/** An upward-facing plane in world space: height, centre (x, z), area and outline ((x, z) pairs). */
+internal class UpwardFootprint(val y: Float, val x: Float, val z: Float, val area: Float, val outline: FloatArray)
+
+/**
+ * Indices of planes that lie within a larger plane of the same kind at the same height. ARCore
+ * often starts a new plane on part of a surface it already tracks and merges the two a few
+ * seconds later; drawing both meanwhile shows overlapping, misaligned grids.
+ */
+internal fun redundantPlanes(planes: List<UpwardFootprint>, kinds: List<PlaneKind>): Set<Int> =
+    planes.indices.filterTo(HashSet()) { i ->
+        val piece = planes[i]
+        planes.indices.any { j ->
+            val other = planes[j]
+            j != i && kinds[j] == kinds[i] && other.area > piece.area &&
+                abs(other.y - piece.y) <= REDUNDANT_HEIGHT_METRES &&
+                distanceToPolygon(piece.x, piece.z, other.outline) <= REDUNDANT_GAP_METRES
+        }
+    }
+
+/** Area of a simple polygon ((x, z) pairs), by the shoelace formula. */
+internal fun polygonArea(polygon: FloatArray): Float {
+    val count = polygon.size / 2
+    var twiceArea = 0f
+    for (i in 0 until count) {
+        val j = (i + 1) % count
+        twiceArea += polygon[i * 2] * polygon[j * 2 + 1] - polygon[j * 2] * polygon[i * 2 + 1]
+    }
+    return abs(twiceArea) / 2f
 }
 
 /** A furniture side's top edge lies within this height of the raised surface it belongs to... */

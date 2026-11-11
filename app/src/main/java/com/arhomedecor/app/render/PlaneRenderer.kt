@@ -58,25 +58,31 @@ class PlaneRenderer(
 
     fun kindOf(plane: Plane): PlaneKind? = kinds[plane]
 
-    /** One material instance per kind: colour differs, depth inputs are shared. */
-    private val kindMaterials: Map<PlaneKind, MaterialInstance> = PlaneKind.entries.associateWith { kind ->
+    /**
+     * One material instance per kind of ARCore plane (colour differs, depth inputs are shared),
+     * plus one for walls marked by hand: their outline is not ARCore's, so depth must confirm
+     * the wall everywhere (see fullCheckInside in plane.mat).
+     */
+    private val kindMaterials: Map<PlaneKind, MaterialInstance> =
+        PlaneKind.entries.associateWith { createMaterialInstance(material, it, fullCheckInside = false) }
+    private val markedWallMaterial = createMaterialInstance(material, PlaneKind.WALL, fullCheckInside = true)
+    private val allMaterials = kindMaterials.values + markedWallMaterial
+
+    private fun createMaterialInstance(material: Material, kind: PlaneKind, fullCheckInside: Boolean) =
         material.createInstance().apply {
             val (r, g, b, a) = colorFor(kind)
             setParameter("color", r, g, b, a)
             setParameter("gridSpacing", GRID_SPACING_METRES)
             setParameter("depthEnabled", 0f)
-            // Nothing real lies beyond a floor or ceiling, so "farther" readings there are noise.
-            val checkOverhang = kind == PlaneKind.RAISED_SURFACE || kind == PlaneKind.WALL
-            setParameter("hideWhenFarther", if (checkOverhang) 1f else 0f)
+            setParameter("fullCheckInside", if (fullCheckInside) 1f else 0f)
             setParameter("baseTolerance", if (kind == PlaneKind.WALL) WALL_TOLERANCE_METRES else TOLERANCE_METRES)
             setParameter("minNormalAgreement", if (kind == PlaneKind.WALL) WALL_MIN_NORMAL_AGREEMENT else MIN_NORMAL_AGREEMENT)
             setParameter("debugView", 0f)
         }
-    }
 
     /** Development aid: colour planes by how far the real surface is from them (see plane.mat). */
     fun setDebugView(enabled: Boolean) {
-        for (instance in kindMaterials.values) instance.setParameter("debugView", if (enabled) 1f else 0f)
+        for (instance in allMaterials) instance.setParameter("debugView", if (enabled) 1f else 0f)
     }
     private val depthSampler = TextureSampler(
         TextureSampler.MinFilter.LINEAR,
@@ -125,7 +131,7 @@ class PlaneRenderer(
      */
     fun setDepthInputs(texture: Texture, ndcToUv: FloatArray, projection: FloatArray, enabled: Boolean) {
         val uvToNdc = invertAffine2d(ndcToUv)
-        for (instance in kindMaterials.values) {
+        for (instance in allMaterials) {
             instance.setParameter("depthTexture", texture, depthSampler)
             instance.setParameter("uvFromNdcU", ndcToUv[0], ndcToUv[1], ndcToUv[2])
             instance.setParameter("uvFromNdcV", ndcToUv[3], ndcToUv[4], ndcToUv[5])
@@ -211,6 +217,14 @@ class PlaneRenderer(
             .filter { it.type == Plane.Type.HORIZONTAL_DOWNWARD_FACING }
             .minOfOrNull { it.centerPose.ty() }
 
+        // Pieces of a surface that ARCore hasn't merged into the larger plane covering them yet:
+        // drawing both would show two misaligned grids until it does.
+        val upwardFootprints = upward.mapIndexed { i, plane ->
+            val outline = plane.worldOutlineXz()
+            UpwardFootprint(upwardInfo[i].y, upwardInfo[i].x, upwardInfo[i].z, polygonArea(outline), outline)
+        }
+        val redundant = redundantPlanes(upwardFootprints, upward.map { newKinds.getValue(it) }).map { upward[it] }.toHashSet()
+
         val renderables = engine.renderableManager
         val visible = HashSet<Any>()
         val raised = ArrayList<Float>()
@@ -226,6 +240,7 @@ class PlaneRenderer(
                 furnitureSides++
                 continue // not drawn: hidden by the loop below
             }
+            if (plane in redundant) continue
             if (kind == PlaneKind.WALL && markedWallPlanes.isNotEmpty()) {
                 val normal = pose.rotateVector(UP) // a plane's local Y axis is its normal
                 val radius = plane.outlineRadius()
@@ -246,7 +261,7 @@ class PlaneRenderer(
                 val outline = FloatArray(polygon.remaining()) { polygon.get(it) }
                 val dilation = if (depthAvailable) depthExpansionFor(kind) else 0f
                 val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
-                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind)) continue
+                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind, kindMaterials.getValue(kind))) continue
                 mesh.builtForDepth = depthAvailable
                 mesh.lastBuildNanos = nowNanos
             }
@@ -272,7 +287,7 @@ class PlaneRenderer(
             val mesh = meshes.getOrPut(wall) { createMesh() }
             val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
             if (!mesh.hasRenderable || mesh.builtForDepth != depthAvailable) {
-                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL)) continue
+                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL, markedWallMaterial)) continue
                 mesh.builtForDepth = depthAvailable
             }
             show(mesh, wall.anchor.pose)
@@ -485,7 +500,7 @@ class PlaneRenderer(
     fun destroy() {
         meshes.values.forEach(::destroyMesh)
         meshes.clear()
-        kindMaterials.values.forEach(engine::destroyMaterialInstance)
+        allMaterials.forEach(engine::destroyMaterialInstance)
     }
 
     private fun createMesh(): PlaneMesh {
@@ -515,6 +530,7 @@ class PlaneRenderer(
         feather: Float,
         mesh: PlaneMesh,
         kind: PlaneKind,
+        instance: MaterialInstance,
     ): Boolean {
         val vertexCount = outline.size / 2
         if (vertexCount < 3) return false
@@ -555,7 +571,7 @@ class PlaneRenderer(
         if (!mesh.hasRenderable) {
             RenderableManager.Builder(1)
                 .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, mesh.vertexBuffer, mesh.indexBuffer, 0, indices.size)
-                .material(0, kindMaterials.getValue(kind))
+                .material(0, instance)
                 .culling(false)
                 .castShadows(false)
                 .receiveShadows(false)
@@ -615,13 +631,14 @@ class PlaneRenderer(
         const val WALL_TOLERANCE_METRES = 0.10f
 
         /**
-         * The real surface must face within about 35 degrees of the plane (cos 35° ≈ 0.82) to
-         * count as it; walls allow about 50 degrees (cos 50° ≈ 0.64) since depth on plain walls
-         * is poor. Perpendicular surfaces (a wall at table height, a table side against a wall)
-         * are far outside either.
+         * Beyond ARCore's outline, the real surface must face within about 45 degrees of the
+         * plane (cos 45° ≈ 0.71) to count as it; walls allow about 55 degrees (cos 55° ≈ 0.57)
+         * since depth on plain walls is poor. Depth on glossy or cluttered surfaces ripples, so
+         * tighter limits make the grid flicker; perpendicular surfaces (a wall at table height,
+         * a table side against a wall) are far outside either.
          */
-        const val MIN_NORMAL_AGREEMENT = 0.82f
-        const val WALL_MIN_NORMAL_AGREEMENT = 0.64f
+        const val MIN_NORMAL_AGREEMENT = 0.71f
+        const val WALL_MIN_NORMAL_AGREEMENT = 0.57f
 
         /** Outline rebuilds per plane at most 10 times a second. */
         const val REBUILD_INTERVAL_NANOS = 100_000_000L

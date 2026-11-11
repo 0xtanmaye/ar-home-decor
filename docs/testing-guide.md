@@ -78,7 +78,7 @@ ARCore sometimes loses its place, for example after fast movement or while point
 - **Walls without texture** aren't detected automatically; mark them by hand.
 - **Doors, curtains, switchboards and other flat things on a wall** count as "wall" geometrically (they are flat and vertical). Where ARCore detects them on a marked wall they are hidden, because the marked wall replaces them. Telling them apart from paintable wall needs the segmentation model planned for the wall-paint stage.
 - **Furniture sides:** vertical surfaces whose top meets a table or bed, and any detected vertical surface that ends below 1 m, are treated as the side of furniture and not drawn. A real wall seen only below 1 m appears once more of it is scanned, or can be marked by hand.
-- **Glossy or glass table tops** may show little or no grid: depth sees reflections in them rather than the surface.
+- **Glossy or glass surfaces:** depth sees reflections in them rather than the surface, so it can't confirm where they end. The grid covers the part ARCore has tracked and may stop short of the real edge until more of the surface has been scanned.
 - **Small objects on the floor** (shoes, feet, cables) up to about 5 cm high can still pick up a little floor grid: depth can't separate them from the floor.
 
 ## Common mistakes

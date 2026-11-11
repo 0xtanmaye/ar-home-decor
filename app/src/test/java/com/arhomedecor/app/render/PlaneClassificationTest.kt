@@ -74,6 +74,38 @@ class PlaneClassificationTest {
         assertEquals(PlaneKind.WALL, classifyVertical(panel(floorY + 0.1f, deskY + 0.06f), emptyList(), null, false))
     }
 
+    private fun square(x: Float, z: Float, half: Float, y: Float): UpwardFootprint {
+        val outline = floatArrayOf(x - half, z - half, x + half, z - half, x + half, z + half, x - half, z + half)
+        return UpwardFootprint(y, x, z, polygonArea(outline), outline)
+    }
+
+    @Test
+    fun smallPieceInsideALargerPlaneAtTheSameHeightIsRedundant() {
+        val desk = square(0f, 0f, 0.6f, deskY)
+        val piece = square(0.3f, 0.1f, 0.15f, deskY + 0.01f)
+        val raised = PlaneKind.RAISED_SURFACE
+        assertEquals(setOf(1), redundantPlanes(listOf(desk, piece), listOf(raised, raised)))
+    }
+
+    @Test
+    fun piecesThatDifferInHeightKindOrPlaceAreKept() {
+        val desk = square(0f, 0f, 0.6f, deskY)
+        val raised = PlaneKind.RAISED_SURFACE
+        // A shelf 10 cm higher, a piece beside the desk, and a floor piece under it.
+        val shelf = square(0.3f, 0.1f, 0.15f, deskY + 0.1f)
+        val beside = square(1.2f, 0f, 0.15f, deskY)
+        val floor = square(0f, 0f, 0.2f, deskY)
+        assertEquals(
+            emptySet<Int>(),
+            redundantPlanes(listOf(desk, shelf, beside, floor), listOf(raised, raised, raised, PlaneKind.FLOOR)),
+        )
+    }
+
+    @Test
+    fun polygonAreaOfARectangle() {
+        assertEquals(2f, polygonArea(floatArrayOf(0f, 0f, 2f, 0f, 2f, 1f, 0f, 1f)), 1e-6f)
+    }
+
     @Test
     fun distanceToPolygonIsZeroInsideAndToTheNearestEdgeOutside() {
         val square = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
