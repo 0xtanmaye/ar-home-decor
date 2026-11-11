@@ -18,6 +18,7 @@ import com.google.android.filament.ToneMapper
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
+import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.Gltfio
 import com.google.ar.core.Frame
 import com.google.ar.core.Pose
@@ -59,8 +60,8 @@ class ArRenderer(
     val depth = DepthTexture(engine)
 
     private val modelLoader = ModelLoader(engine)
-    private val referenceCube = modelLoader.loadGlb(context, REFERENCE_CUBE_ASSET)
-    private var referenceCubeInScene = false
+    private val referenceCube = PlacedModel(modelLoader.loadGlb(context, REFERENCE_CUBE_ASSET))
+    private val wallMarker = PlacedModel(modelLoader.loadGlb(context, WALL_MARKER_ASSET))
 
     private val sunEntity = EntityManager.get().create()
     private val indirectLight: IndirectLight
@@ -74,6 +75,9 @@ class ArRenderer(
 
     /** World-space height of the floor, or null until one is found. */
     val floorY: Float? get() = planeRenderer.floorY
+
+    /** World-space height of the ceiling, or null if none has been detected. */
+    val ceilingY: Float? get() = planeRenderer.ceilingY
     val raisedSurfaceHeights: List<Float> get() = planeRenderer.raisedSurfaceHeights
 
     /** Planes ARCore permanently discarded during the last rendered frame. */
@@ -119,11 +123,15 @@ class ArRenderer(
         cameraBackground.attachTo(session)
     }
 
-    /**
-     * Draws the frame returned by the latest Session.update().
-     * [referenceCubePose] is where the reference cube sits, or null to hide it.
-     */
-    fun render(session: Session, frame: Frame, frameTimeNanos: Long, referenceCubePose: Pose?) {
+    /** What the user has placed: null poses hide the object. */
+    class Content(
+        val referenceCubePose: Pose?,
+        val wallMarkerPose: Pose?,
+        val walls: List<ManualWall>,
+    )
+
+    /** Draws the frame returned by the latest Session.update(). */
+    fun render(session: Session, frame: Frame, frameTimeNanos: Long, content: Content) {
         val chain = swapChain ?: return
         // Make ARCore's texture update (done in the shared context) visible to Filament's context.
         GLES30.glFlush()
@@ -141,8 +149,9 @@ class ArRenderer(
             camera.setModelMatrix(cameraModelMatrix)
         }
 
-        planeRenderer.update(session, frame)
-        updateReferenceCube(referenceCubePose)
+        planeRenderer.update(session, frame, content.walls)
+        referenceCube.place(content.referenceCubePose)
+        wallMarker.place(content.wallMarkerPose)
 
         if (renderer.beginFrame(chain, frameTimeNanos)) {
             renderer.render(view)
@@ -150,20 +159,30 @@ class ArRenderer(
         }
     }
 
-    private fun updateReferenceCube(pose: Pose?) {
-        if (pose == null) {
-            if (referenceCubeInScene) {
-                scene.removeEntities(referenceCube.entities)
-                referenceCubeInScene = false
+    /** A loaded model that is shown at a pose, or hidden. */
+    private inner class PlacedModel(val asset: FilamentAsset) {
+        private var inScene = false
+
+        fun place(pose: Pose?) {
+            if (pose == null) {
+                if (inScene) {
+                    scene.removeEntities(asset.entities)
+                    inScene = false
+                }
+                return
             }
-            return
+            pose.toMatrix(modelMatrix, 0)
+            val transforms = engine.transformManager
+            transforms.setTransform(transforms.getInstance(asset.root), modelMatrix)
+            if (!inScene) {
+                scene.addEntities(asset.entities)
+                inScene = true
+            }
         }
-        pose.toMatrix(modelMatrix, 0)
-        val transforms = engine.transformManager
-        transforms.setTransform(transforms.getInstance(referenceCube.root), modelMatrix)
-        if (!referenceCubeInScene) {
-            scene.addEntities(referenceCube.entities)
-            referenceCubeInScene = true
+
+        fun destroy() {
+            place(null)
+            modelLoader.destroyAsset(asset)
         }
     }
 
@@ -192,8 +211,8 @@ class ArRenderer(
 
     fun destroy() {
         uiHelper.detach()
-        if (referenceCubeInScene) scene.removeEntities(referenceCube.entities)
-        modelLoader.destroyAsset(referenceCube)
+        referenceCube.destroy()
+        wallMarker.destroy()
         modelLoader.destroy()
         planeRenderer.destroy()
         depth.destroy()
@@ -229,6 +248,7 @@ class ArRenderer(
         private const val SUN_INTENSITY = 2.2f
         private const val AMBIENT_INTENSITY = 0.35f
         const val REFERENCE_CUBE_ASSET = "models/reference_cube_50cm.glb"
+        const val WALL_MARKER_ASSET = "models/marker_4cm.glb"
         const val REFERENCE_CUBE_EDGE_METRES = 0.5f
 
         init {

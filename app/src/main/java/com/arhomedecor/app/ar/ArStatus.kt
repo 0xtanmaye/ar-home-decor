@@ -4,8 +4,23 @@ import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import java.util.Locale
 
+/** What a tap on the camera view does. */
+enum class PlacementMode {
+    /** Place the reference cube on the floor or a raised surface. */
+    CUBE,
+
+    /** Mark a wall by tapping two points where it meets the floor. */
+    WALL,
+}
+
 /** Snapshot of the AR session shown in the on-screen debug panel. */
 data class ArStatus(
+    val mode: PlacementMode = PlacementMode.CUBE,
+    /** In wall mode: the first point along the wall's base has been tapped. */
+    val wallStartPlaced: Boolean = false,
+    val markedWalls: Int = 0,
+    /** Marked walls relative to the real walls measured by depth; positive = in front. */
+    val wallOffsetMetres: Float? = null,
     val fps: Int = 0,
     val tracking: TrackingState = TrackingState.PAUSED,
     val failureReason: TrackingFailureReason = TrackingFailureReason.NONE,
@@ -28,6 +43,7 @@ data class ArStatus(
 )
 
 const val MAP_RESET_NOTICE = "Tracking was reset, so detected surfaces were cleared. Scan the floor again."
+const val WALL_TAPS_TOO_CLOSE_NOTICE = "Those points are too close together. Tap further along the wall."
 
 fun trackingLabel(status: ArStatus): String = when (status.tracking) {
     TrackingState.TRACKING -> "tracking"
@@ -53,7 +69,20 @@ fun hintFor(status: ArStatus, cubeEdgeCentimetres: Int): String {
             TrackingFailureReason.NONE -> "Move the phone slowly to start tracking."
         }
     }
-    if (status.floors == 0) return "Slowly move the phone while pointing at the floor."
+    if (status.floors == 0) {
+        return if (status.mode == PlacementMode.WALL) {
+            "Scan the floor first: walls are marked where they meet the floor."
+        } else {
+            "Slowly move the phone while pointing at the floor."
+        }
+    }
+    if (status.mode == PlacementMode.WALL) {
+        return if (status.wallStartPlaced) {
+            "Now tap another point along the bottom of the same wall."
+        } else {
+            "Tap the floor right where it meets the wall."
+        }
+    }
     val distance = status.cubeDistanceMetres
         ?: return "Tap the floor to place a $cubeEdgeCentimetres cm reference cube."
     return String.format(Locale.US, "Cube is %.2f m away. Tap elsewhere to move it.", distance)

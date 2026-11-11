@@ -45,6 +45,17 @@ class ArStatusTest {
     }
 
     @Test
+    fun wallModeWalksThroughTheTwoTaps() {
+        val wallMode = tracking.copy(mode = PlacementMode.WALL)
+        assertEquals("Scan the floor first: walls are marked where they meet the floor.", hintFor(wallMode, 50))
+        assertEquals("Tap the floor right where it meets the wall.", hintFor(wallMode.copy(floors = 1), 50))
+        assertEquals(
+            "Now tap another point along the bottom of the same wall.",
+            hintFor(wallMode.copy(floors = 1, wallStartPlaced = true), 50),
+        )
+    }
+
+    @Test
     fun trackingLabelDescribesFailureReason() {
         val status = ArStatus(tracking = TrackingState.PAUSED, failureReason = TrackingFailureReason.EXCESSIVE_MOTION)
         assertEquals("lost (excessive motion)", trackingLabel(status))

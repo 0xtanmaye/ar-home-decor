@@ -1,10 +1,10 @@
-"""Generate the reference cube model used to check AR scale accuracy.
+"""Generate cube models: the reference cube used to check AR scale accuracy, and markers.
 
 Writes a binary glTF (.glb) cube with the given edge length in metres. The origin
 is at the centre of the bottom face, so the cube sits flat on the surface it is
-placed on.
+placed on. The optional colour is linear RGB, e.g. 0.9,0.38,0.08 (the default orange).
 
-Usage: python3 make_reference_cube.py <edge-metres> <output.glb>
+Usage: python3 make_reference_cube.py <edge-metres> <output.glb> [r,g,b]
 """
 
 import json
@@ -42,7 +42,10 @@ def pad(data: bytes, fill: bytes) -> bytes:
     return data + fill * ((4 - len(data) % 4) % 4)
 
 
-def build_glb(edge: float) -> bytes:
+DEFAULT_COLOR = (0.9, 0.38, 0.08)
+
+
+def build_glb(edge: float, color=DEFAULT_COLOR) -> bytes:
     positions, normals, indices = build_geometry(edge)
     pos_bytes = b"".join(struct.pack("<3f", *p) for p in positions)
     nrm_bytes = b"".join(struct.pack("<3f", *n) for n in normals)
@@ -62,9 +65,9 @@ def build_glb(edge: float) -> bytes:
             }],
         }],
         "materials": [{
-            "name": "ReferenceOrange",
+            "name": "CubeColor",
             "pbrMetallicRoughness": {
-                "baseColorFactor": [0.9, 0.38, 0.08, 1.0],
+                "baseColorFactor": [*color, 1.0],
                 "metallicFactor": 0.0,
                 "roughnessFactor": 0.7,
             },
@@ -94,11 +97,14 @@ def build_glb(edge: float) -> bytes:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
     edge = float(sys.argv[1])
+    color = tuple(float(c) for c in sys.argv[3].split(",")) if len(sys.argv) == 4 else DEFAULT_COLOR
+    if len(color) != 3:
+        sys.exit("colour must be three numbers: r,g,b")
     with open(sys.argv[2], "wb") as f:
-        f.write(build_glb(edge))
+        f.write(build_glb(edge, color))
 
 
 if __name__ == "__main__":

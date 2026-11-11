@@ -44,7 +44,7 @@ class FloorDepthProbe {
             val planeDepth = -worldToCamera.transformPoint(hitPoint)[2]
             val realDepth = depth.depthAt(texturePoints[k * 2], texturePoints[k * 2 + 1])
             if (planeDepth <= 0f || realDepth <= 0f) continue
-            offsets += planeHeightAboveRealSurface(cameraPose.ty(), hitPoint[1], planeDepth, realDepth)
+            offsets += planeOffsetFromRealSurface(cameraPose.ty() - hitPoint[1], planeDepth, realDepth)
         }
         if (offsets.size < MIN_SAMPLES) return null
         return Result(median(offsets), offsets.size)
@@ -72,13 +72,16 @@ class FloorDepthProbe {
 }
 
 /**
- * Vertical gap between a plane hit and the real surface on the same camera ray.
+ * Gap, measured along the plane's normal, between a plane and the real surface seen on the same
+ * camera ray. [cameraDistanceToPlane] is how far the camera is from the plane along its normal
+ * (for a floor: the camera's height above it).
  *
- * Points on a ray scale with depth, so the real point is the hit point scaled by
- * realDepth / planeDepth about the camera. Positive means the plane is above the real surface.
+ * Points on a ray scale with depth, so the real point is the plane point scaled by
+ * realDepth / planeDepth about the camera. Positive means the plane is in front of the real
+ * surface (towards the camera): above a floor, or standing out from a wall.
  */
-internal fun planeHeightAboveRealSurface(cameraY: Float, hitY: Float, planeDepth: Float, realDepth: Float): Float =
-    (cameraY - hitY) * (realDepth / planeDepth - 1f)
+internal fun planeOffsetFromRealSurface(cameraDistanceToPlane: Float, planeDepth: Float, realDepth: Float): Float =
+    cameraDistanceToPlane * (realDepth / planeDepth - 1f)
 
 internal fun median(values: List<Float>): Float {
     require(values.isNotEmpty()) { "median of no values" }

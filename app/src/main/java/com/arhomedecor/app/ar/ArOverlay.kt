@@ -1,14 +1,20 @@
 package com.arhomedecor.app.ar
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,9 +29,17 @@ import java.util.Locale
 
 private val PanelBackground = Color(0x99000000)
 
-/** Debug panel (top) and instruction hint (bottom) drawn over the camera view. Not touchable. */
+/**
+ * Debug panel (top), mode controls and instruction hint (bottom) over the camera view.
+ * Only the controls take touches; taps anywhere else reach the AR view.
+ */
 @Composable
-fun ArOverlay(status: ArStatus, cubeEdgeCentimetres: Int) {
+fun ArOverlay(
+    status: ArStatus,
+    cubeEdgeCentimetres: Int,
+    onModeChange: (PlacementMode) -> Unit,
+    onClearWalls: () -> Unit,
+) {
     Box(
         Modifier
             .fillMaxSize()
@@ -42,33 +56,69 @@ fun ArOverlay(status: ArStatus, cubeEdgeCentimetres: Int) {
             DebugLine("Tracking", trackingLabel(status))
             DebugLine("Floors", status.floors.toString())
             DebugLine("Surfaces", status.raisedSurfaces.toString())
-            DebugLine("Walls", status.walls.toString())
+            DebugLine("Walls", "${status.walls} detected, ${status.markedWalls} marked")
             DebugLine(
                 "Height",
                 status.cameraHeightMetres?.let { String.format(Locale.US, "%.2f m above floor", it) } ?: "-",
             )
             DebugLine("Depth", if (status.depthActive) "on" else "off")
-            DebugLine(
-                "Floor fit",
-                status.floorOffsetMetres?.let { String.format(Locale.US, "%+.1f cm vs depth", it * 100) } ?: "-",
-            )
+            DebugLine("Floor fit", fitLabel(status.floorOffsetMetres))
+            DebugLine("Wall fit", fitLabel(status.wallOffsetMetres))
             DebugLine(
                 "Cube",
                 status.cubeDistanceMetres?.let { String.format(Locale.US, "%.2f m away", it) } ?: "not placed",
             )
         }
-        Text(
-            text = hintFor(status, cubeEdgeCentimetres),
-            color = Color.White,
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .background(PanelBackground, RoundedCornerShape(12.dp))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-        )
+
+        Column(
+            Modifier.align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ModeChip("Place cube", status.mode == PlacementMode.CUBE) { onModeChange(PlacementMode.CUBE) }
+                ModeChip("Mark wall", status.mode == PlacementMode.WALL) { onModeChange(PlacementMode.WALL) }
+                if (status.markedWalls > 0 || status.wallStartPlaced) {
+                    AssistChip(
+                        onClick = onClearWalls,
+                        label = { Text("Clear walls") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = PanelBackground,
+                            labelColor = Color.White,
+                        ),
+                    )
+                }
+            }
+            Text(
+                text = hintFor(status, cubeEdgeCentimetres),
+                color = Color.White,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .background(PanelBackground, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
     }
 }
+
+@Composable
+private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label) },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = PanelBackground,
+            labelColor = Color.White,
+            selectedContainerColor = Color.White,
+            selectedLabelColor = Color.Black,
+        ),
+    )
+}
+
+private fun fitLabel(offsetMetres: Float?): String =
+    offsetMetres?.let { String.format(Locale.US, "%+.1f cm vs depth", it * 100) } ?: "-"
 
 @Composable
 private fun DebugLine(label: String, value: String) {

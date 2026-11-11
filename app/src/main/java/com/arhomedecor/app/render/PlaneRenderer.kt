@@ -12,14 +12,21 @@ import com.google.android.filament.TextureSampler
 import com.google.android.filament.VertexBuffer
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import kotlin.math.hypot
 
 enum class PlaneKind { FLOOR, RAISED_SURFACE, WALL, CEILING }
 
-/** Counts of planes currently shown, by kind. */
-data class PlaneCounts(val floors: Int = 0, val raisedSurfaces: Int = 0, val walls: Int = 0, val ceilings: Int = 0)
+/** Counts of planes currently shown, by kind. [walls] counts ARCore-detected walls only. */
+data class PlaneCounts(
+    val floors: Int = 0,
+    val raisedSurfaces: Int = 0,
+    val walls: Int = 0,
+    val ceilings: Int = 0,
+    val markedWalls: Int = 0,
+)
 
 /** Upward-facing planes within this distance of the lowest one count as floor. */
 internal const val FLOOR_TOLERANCE_METRES = 0.10f
@@ -36,7 +43,8 @@ internal fun classifyPlane(type: Plane.Type, planeY: Float, floorY: Float?): Pla
 }
 
 /**
- * Draws every tracked ARCore plane as a semi-transparent polygon with a metric grid.
+ * Draws every tracked ARCore plane, plus walls the user marked, as a semi-transparent polygon
+ * with a metric grid.
  *
  * When a depth image is available, each grid pixel is only drawn where the measured real
  * surface is at the same distance as the plane. That hides grid that is covered by real
@@ -74,7 +82,8 @@ class PlaneRenderer(
         TextureSampler.WrapMode.CLAMP_TO_EDGE,
     )
 
-    private val meshes = HashMap<Plane, PlaneMesh>()
+    /** Keyed by ARCore [Plane] or [ManualWall]. */
+    private val meshes = HashMap<Any, PlaneMesh>()
     private val transform = FloatArray(16)
 
     var counts = PlaneCounts()
@@ -82,6 +91,10 @@ class PlaneRenderer(
 
     /** World-space height of the floor (lowest upward-facing plane), or null if none is tracked. */
     var floorY: Float? = null
+        private set
+
+    /** World-space height of the lowest ceiling plane, or null if none is tracked. */
+    var ceilingY: Float? = null
         private set
 
     /** Heights of raised surfaces above the floor, in metres, for diagnostics. */
@@ -105,7 +118,7 @@ class PlaneRenderer(
         }
     }
 
-    fun update(session: Session, frame: Frame) {
+    fun update(session: Session, frame: Frame, manualWalls: Collection<ManualWall>) {
         val updated = frame.getUpdatedTrackables(Plane::class.java).toHashSet()
         val tracked = session.getAllTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.TRACKING && it.subsumedBy == null }
@@ -113,9 +126,12 @@ class PlaneRenderer(
             .filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
             .minOfOrNull { it.centerPose.ty() }
         floorY = floor
+        ceilingY = tracked
+            .filter { it.type == Plane.Type.HORIZONTAL_DOWNWARD_FACING }
+            .minOfOrNull { it.centerPose.ty() }
 
         val renderables = engine.renderableManager
-        val visible = HashSet<Plane>()
+        val visible = HashSet<Any>()
         val raised = ArrayList<Float>()
         var floors = 0
         var walls = 0
@@ -126,18 +142,18 @@ class PlaneRenderer(
             val kind = classifyPlane(plane.type, pose.ty(), floor)
             val mesh = meshes.getOrPut(plane) { createMesh() }
             val needsGeometry = !mesh.hasRenderable || plane in updated
-            if (needsGeometry && !updateGeometry(plane, mesh, kind)) continue
+            if (needsGeometry) {
+                val polygon = plane.polygon
+                val outline = FloatArray(polygon.remaining()) { polygon.get(it) }
+                // ARCore polygons are (x, z) pairs in the plane's local frame (the plane is y = 0).
+                if (!updateGeometry(outline, PLANE_AXIS_X, PLANE_AXIS_Z, mesh, kind)) continue
+            }
 
             if (kind != mesh.kind) {
                 renderables.setMaterialInstanceAt(renderables.getInstance(mesh.entity), 0, kindMaterials.getValue(kind))
                 mesh.kind = kind
             }
-            pose.toMatrix(transform, 0)
-            engine.transformManager.setTransform(engine.transformManager.getInstance(mesh.entity), transform)
-            if (!mesh.inScene) {
-                scene.addEntity(mesh.entity)
-                mesh.inScene = true
-            }
+            show(mesh, pose)
             visible += plane
             when (kind) {
                 PlaneKind.FLOOR -> floors++
@@ -146,18 +162,34 @@ class PlaneRenderer(
                 PlaneKind.CEILING -> ceilings++
             }
         }
-        counts = PlaneCounts(floors, raised.size, walls, ceilings)
+
+        var marked = 0
+        for (wall in manualWalls) {
+            if (wall.anchor.trackingState != TrackingState.TRACKING) continue
+            val mesh = meshes.getOrPut(wall) { createMesh() }
+            if (!mesh.hasRenderable && !updateGeometry(wall.outline, wall.alongWall, UP, mesh, PlaneKind.WALL)) continue
+            show(mesh, wall.anchor.pose)
+            visible += wall
+            marked++
+        }
+        counts = PlaneCounts(floors, raised.size, walls, ceilings, marked)
         raisedSurfaceHeights = raised.sorted()
 
+        val markedSet = manualWalls.toHashSet()
         var discarded = 0
         val iterator = meshes.entries.iterator()
         while (iterator.hasNext()) {
-            val (plane, mesh) = iterator.next()
-            if (plane in visible) continue
-            if (plane.trackingState == TrackingState.STOPPED || plane.subsumedBy != null) {
+            val (key, mesh) = iterator.next()
+            if (key in visible) continue
+            val gone = when (key) {
                 // Merged planes (subsumed) live on in the plane that absorbed them; only
                 // STOPPED ones are really gone.
-                if (plane.trackingState == TrackingState.STOPPED) discarded++
+                is Plane -> key.trackingState == TrackingState.STOPPED || key.subsumedBy != null
+                is ManualWall -> key !in markedSet || key.anchor.trackingState == TrackingState.STOPPED
+                else -> true
+            }
+            if (gone) {
+                if (key is Plane && key.trackingState == TrackingState.STOPPED) discarded++
                 destroyMesh(mesh)
                 iterator.remove()
             } else if (mesh.inScene) {
@@ -167,6 +199,15 @@ class PlaneRenderer(
             }
         }
         discardedLastUpdate = discarded
+    }
+
+    private fun show(mesh: PlaneMesh, pose: Pose) {
+        pose.toMatrix(transform, 0)
+        engine.transformManager.setTransform(engine.transformManager.getInstance(mesh.entity), transform)
+        if (!mesh.inScene) {
+            scene.addEntity(mesh.entity)
+            mesh.inScene = true
+        }
     }
 
     fun destroy() {
@@ -184,10 +225,19 @@ class PlaneRenderer(
         return mesh
     }
 
-    /** Returns false if the polygon is degenerate (fewer than 3 vertices). */
-    private fun updateGeometry(plane: Plane, mesh: PlaneMesh, kind: PlaneKind): Boolean {
-        val polygon = plane.polygon
-        val vertexCount = polygon.remaining() / 2
+    /**
+     * Builds the mesh for a convex [outline] of (u, v) pairs. Vertices are placed at
+     * u * [axisU] + v * [axisV] in the mesh's local frame; (u, v) also drive the metric grid.
+     * Returns false if the polygon is degenerate (fewer than 3 vertices).
+     */
+    private fun updateGeometry(
+        outline: FloatArray,
+        axisU: FloatArray,
+        axisV: FloatArray,
+        mesh: PlaneMesh,
+        kind: PlaneKind,
+    ): Boolean {
+        val vertexCount = outline.size / 2
         if (vertexCount < 3) return false
 
         if (vertexCount > mesh.capacity) {
@@ -196,11 +246,9 @@ class PlaneRenderer(
             allocateBuffers(mesh, maxOf(vertexCount, mesh.capacity * 2))
         }
 
-        // The polygon is (x, z) pairs in the plane's local frame, where the plane lies in y = 0.
         // ARCore's outline is only a rough hull of tracked points, so it is drawn with a soft
         // edge: an outer ring (transparent) on the outline and an inner ring (opaque) pulled
         // FEATHER_METRES towards the centre.
-        val outline = FloatArray(vertexCount * 2) { polygon.get(it) }
         var cx = 0f
         var cz = 0f
         for (i in 0 until vertexCount) {
@@ -222,10 +270,10 @@ class PlaneRenderer(
             val iz = cz + (z - cz) * scale
             val inner = vertexCount + i
 
-            positions[i * 3] = x
-            positions[i * 3 + 2] = z
-            positions[inner * 3] = ix
-            positions[inner * 3 + 2] = iz
+            for (axis in 0 until 3) {
+                positions[i * 3 + axis] = x * axisU[axis] + z * axisV[axis]
+                positions[inner * 3 + axis] = ix * axisU[axis] + iz * axisV[axis]
+            }
             uvs[i * 2] = x
             uvs[i * 2 + 1] = z
             uvs[inner * 2] = ix
@@ -284,6 +332,9 @@ class PlaneRenderer(
     }
 
     private companion object {
+        val PLANE_AXIS_X = floatArrayOf(1f, 0f, 0f)
+        val PLANE_AXIS_Z = floatArrayOf(0f, 0f, 1f)
+
         const val GRID_SPACING_METRES = 0.25f
         const val FEATHER_METRES = 0.15f
 

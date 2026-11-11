@@ -27,19 +27,19 @@ class DepthMathTest {
 
     @Test
     fun planeOnTheRealFloorHasNoGap() {
-        assertEquals(0f, planeHeightAboveRealSurface(cameraY = 1.2f, hitY = 0f, planeDepth = 1.5f, realDepth = 1.5f), 1e-6f)
+        assertEquals(0f, planeOffsetFromRealSurface(cameraDistanceToPlane = 1.2f, planeDepth = 1.5f, realDepth = 1.5f), 1e-6f)
     }
 
     @Test
     fun planeCloserThanRealFloorIsAboveIt() {
         // Camera 1.2 m above the plane; the real floor is 5% farther along the ray.
-        val gap = planeHeightAboveRealSurface(cameraY = 1.2f, hitY = 0f, planeDepth = 2.0f, realDepth = 2.1f)
+        val gap = planeOffsetFromRealSurface(cameraDistanceToPlane = 1.2f, planeDepth = 2.0f, realDepth = 2.1f)
         assertEquals(0.06f, gap, 1e-5f)
     }
 
     @Test
     fun planeFartherThanRealFloorIsBelowIt() {
-        val gap = planeHeightAboveRealSurface(cameraY = 1.2f, hitY = 0f, planeDepth = 2.0f, realDepth = 1.9f)
+        val gap = planeOffsetFromRealSurface(cameraDistanceToPlane = 1.2f, planeDepth = 2.0f, realDepth = 1.9f)
         assertEquals(-0.06f, gap, 1e-5f)
     }
 
