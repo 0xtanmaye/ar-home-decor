@@ -30,6 +30,7 @@ import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
@@ -58,6 +59,11 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
 
     private val pendingTaps = ArrayDeque<MotionEvent>()
     private var cubeAnchor: Anchor? = null
+
+    private var lastTrackingState: TrackingState? = null
+    private var lastFailureReason: TrackingFailureReason? = null
+    private var visiblePlanes = 0
+    private var mapResetNanos = 0L
 
     private val fpsCounter = FpsCounter()
     private val floorProbe = FloorDepthProbe()
@@ -225,6 +231,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         handleTaps(frame, camera)
         val cubePose = cubeAnchor?.takeIf { it.trackingState == TrackingState.TRACKING }?.pose
         renderer.render(activeSession, frame, frameTimeNanos, cubePose)
+        logTrackingEvents(camera, frameTimeNanos)
 
         fpsCounter.onFrame(frameTimeNanos)
         publishStatus(frame, camera, frameTimeNanos)
@@ -243,6 +250,33 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 tap.recycle()
             }
         }
+    }
+
+    /**
+     * Logs tracking changes as they happen (the stats line is only once a second, so short
+     * losses would be missed) and detects ARCore discarding its whole map.
+     */
+    private fun logTrackingEvents(camera: Camera, frameTimeNanos: Long) {
+        val state = camera.trackingState
+        val reason = camera.trackingFailureReason
+        if (state != lastTrackingState || reason != lastFailureReason) {
+            Log.i(EVENT_TAG, "tracking $lastTrackingState/$lastFailureReason -> $state/$reason")
+            lastTrackingState = state
+            lastFailureReason = reason
+        }
+
+        val counts = renderer.planeCounts
+        val planesNow = counts.floors + counts.raisedSurfaces + counts.walls + counts.ceilings
+        val discarded = renderer.planesDiscardedLastFrame
+        if (discarded > 0) {
+            Log.i(EVENT_TAG, "ARCore discarded $discarded planes ($visiblePlanes visible before, $planesNow after)")
+            // Several planes gone at once and nothing left: ARCore restarted its map.
+            if (discarded >= 2 && planesNow == 0) {
+                Log.w(EVENT_TAG, "map reset")
+                mapResetNanos = frameTimeNanos
+            }
+        }
+        visiblePlanes = planesNow
     }
 
     private fun isFloorHit(hit: HitResult): Boolean {
@@ -285,6 +319,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 depthActive = renderer.depth.available,
                 floorOffsetMetres = floorProbeResult?.offsetMetres,
                 cubeDistanceMetres = cubeDistance,
+                notice = MAP_RESET_NOTICE.takeIf {
+                    mapResetNanos != 0L && frameTimeNanos - mapResetNanos < NOTICE_DURATION_NANOS
+                },
             )
         }
 
@@ -314,7 +351,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private companion object {
         const val TAG = "ArActivity"
         const val STATS_TAG = "ArStats"
+        const val EVENT_TAG = "ArEvents"
         const val STATUS_INTERVAL_NANOS = 250_000_000L
+        const val NOTICE_DURATION_NANOS = 5_000_000_000L
         const val LOG_INTERVAL_NANOS = 1_000_000_000L
         val CUBE_EDGE_CENTIMETRES = (ArRenderer.REFERENCE_CUBE_EDGE_METRES * 100).roundToInt()
     }

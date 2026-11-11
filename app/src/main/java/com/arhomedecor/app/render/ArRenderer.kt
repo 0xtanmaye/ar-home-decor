@@ -76,6 +76,9 @@ class ArRenderer(
     val floorY: Float? get() = planeRenderer.floorY
     val raisedSurfaceHeights: List<Float> get() = planeRenderer.raisedSurfaceHeights
 
+    /** Planes ARCore permanently discarded during the last rendered frame. */
+    val planesDiscardedLastFrame: Int get() = planeRenderer.discardedLastUpdate
+
     init {
         view.setScene(scene)
         view.setCamera(camera)

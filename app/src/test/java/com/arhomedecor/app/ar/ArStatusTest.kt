@@ -16,6 +16,13 @@ class ArStatusTest {
     }
 
     @Test
+    fun resetNoticeTakesPriorityOverNormalHints() {
+        val status = tracking.copy(floors = 0, notice = MAP_RESET_NOTICE)
+        assertEquals(MAP_RESET_NOTICE, hintFor(status, 50))
+        assertEquals("Camera unavailable", hintFor(status.copy(error = "Camera unavailable"), 50))
+    }
+
+    @Test
     fun trackingFailureExplainsWhatToDo() {
         val status = ArStatus(tracking = TrackingState.PAUSED, failureReason = TrackingFailureReason.INSUFFICIENT_LIGHT)
         assertEquals("Too dark: turn on more lights.", hintFor(status, 50))

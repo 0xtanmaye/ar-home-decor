@@ -22,6 +22,13 @@ material {
             name : depthEnabled
         },
         {
+            // 1 to also hide grid where the real surface is behind the plane (overhang past a
+            // table edge). 0 for floors and ceilings: nothing real is behind them, so a farther
+            // reading there is a reflection or noise.
+            type : float,
+            name : hideWhenFarther
+        },
+        {
             // Affine map from screen NDC (x, y, 1) to depth-image UV.
             type : float3,
             name : uvFromNdcU
@@ -46,7 +53,7 @@ material {
 fragment {
     // How well the real surface (from the depth image) agrees with this plane at this pixel:
     // 1 where they match, fading to 0 where the real surface is clearly nearer (something is in
-    // front of the plane) or farther (the plane overhangs past the real surface).
+    // front of the plane) or, if enabled, clearly farther (the plane overhangs a real edge).
     float depthAgreement() {
         highp vec3 ndc = vec3(getNormalizedViewportCoord().xy * 2.0 - 1.0, 1.0);
         highp vec2 depthUv = vec2(dot(materialParams.uvFromNdcU, ndc), dot(materialParams.uvFromNdcV, ndc));
@@ -56,9 +63,18 @@ fragment {
         }
         highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
         highp float planeDepth = -viewPosition.z;
-        // Depth from a single camera gets less precise with distance.
+        // Depth from a single moving camera gets less precise with distance.
         highp float tolerance = 0.05 + 0.04 * planeDepth;
-        return 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(realDepth - planeDepth));
+        highp float behind = realDepth - planeDepth;
+        if (behind < 0.0) {
+            return 1.0 - smoothstep(tolerance, 2.0 * tolerance, -behind);
+        }
+        if (materialParams.hideWhenFarther < 0.5) {
+            return 1.0;
+        }
+        // Overhangs are large (a table edge over the floor), so a looser test avoids hiding
+        // grid because of depth noise.
+        return 1.0 - smoothstep(2.0 * tolerance, 4.0 * tolerance, behind);
     }
 
     void material(inout MaterialInputs material) {

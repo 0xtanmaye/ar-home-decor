@@ -63,6 +63,9 @@ class PlaneRenderer(
             setParameter("color", r, g, b, a)
             setParameter("gridSpacing", GRID_SPACING_METRES)
             setParameter("depthEnabled", 0f)
+            // Nothing real lies beyond a floor or ceiling, so "farther" readings there are noise.
+            val checkOverhang = kind == PlaneKind.RAISED_SURFACE || kind == PlaneKind.WALL
+            setParameter("hideWhenFarther", if (checkOverhang) 1f else 0f)
         }
     }
     private val depthSampler = TextureSampler(
@@ -83,6 +86,10 @@ class PlaneRenderer(
 
     /** Heights of raised surfaces above the floor, in metres, for diagnostics. */
     var raisedSurfaceHeights: List<Float> = emptyList()
+        private set
+
+    /** Planes ARCore permanently discarded during the last update (all at once = map reset). */
+    var discardedLastUpdate = 0
         private set
 
     /**
@@ -142,11 +149,15 @@ class PlaneRenderer(
         counts = PlaneCounts(floors, raised.size, walls, ceilings)
         raisedSurfaceHeights = raised.sorted()
 
+        var discarded = 0
         val iterator = meshes.entries.iterator()
         while (iterator.hasNext()) {
             val (plane, mesh) = iterator.next()
             if (plane in visible) continue
             if (plane.trackingState == TrackingState.STOPPED || plane.subsumedBy != null) {
+                // Merged planes (subsumed) live on in the plane that absorbed them; only
+                // STOPPED ones are really gone.
+                if (plane.trackingState == TrackingState.STOPPED) discarded++
                 destroyMesh(mesh)
                 iterator.remove()
             } else if (mesh.inScene) {
@@ -155,6 +166,7 @@ class PlaneRenderer(
                 mesh.inScene = false
             }
         }
+        discardedLastUpdate = discarded
     }
 
     fun destroy() {

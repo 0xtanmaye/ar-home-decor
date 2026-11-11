@@ -23,7 +23,11 @@ data class ArStatus(
     val cubeDistanceMetres: Float? = null,
     /** A blocking problem (e.g. ARCore missing); overrides the normal hint. */
     val error: String? = null,
+    /** A short-lived message about something that just happened, e.g. a tracking reset. */
+    val notice: String? = null,
 )
+
+const val MAP_RESET_NOTICE = "Tracking was reset, so detected surfaces were cleared. Scan the floor again."
 
 fun trackingLabel(status: ArStatus): String = when (status.tracking) {
     TrackingState.TRACKING -> "tracking"
@@ -38,6 +42,7 @@ fun trackingLabel(status: ArStatus): String = when (status.tracking) {
 /** The single instruction shown to the user for the current state. */
 fun hintFor(status: ArStatus, cubeEdgeCentimetres: Int): String {
     status.error?.let { return it }
+    status.notice?.let { return it }
     if (status.tracking != TrackingState.TRACKING) {
         return when (status.failureReason) {
             TrackingFailureReason.INSUFFICIENT_LIGHT -> "Too dark: turn on more lights."
