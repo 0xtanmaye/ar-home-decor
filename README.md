@@ -32,7 +32,8 @@ identical.
   replays the recording and optionally records the screen while it plays. The phone must be unlocked.
   `--depth-debug` colours planes by the depth check instead of drawing grids: green = the real
   surface is the plane, red = something in front of it, blue = behind it, yellow = at the plane's
-  distance but facing another way.
+  distance but facing another way, grey = beyond ARCore's outline and not yet confirmed by
+  measured depth, magenta = repeatedly seen through. A white line marks ARCore's own outline.
 
 ## Build and run
 

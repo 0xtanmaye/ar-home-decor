@@ -60,6 +60,12 @@ class ArRenderer(
     /** Latest ARCore depth image; unavailable on devices or sessions without depth. */
     val depth = DepthTexture(engine)
 
+    /** Measured (raw) depth points, which build up where each surface really extends. */
+    private val rawDepth = RawDepthPoints()
+
+    /** "rawDepthImages=N rawDepthKept=P%" since the last call, for the stats log. */
+    fun takeRawDepthSummary(): String = rawDepth.takeSummary()
+
     private val modelLoader = ModelLoader(engine)
     private val referenceCube = PlacedModel(modelLoader.loadGlb(context, REFERENCE_CUBE_ASSET))
     private val wallMarker = PlacedModel(modelLoader.loadGlb(context, WALL_MARKER_ASSET))
@@ -162,7 +168,8 @@ class ArRenderer(
             camera.setModelMatrix(cameraModelMatrix)
         }
 
-        planeRenderer.update(session, frame, content.walls, depth.available, arCamera.pose, frameTimeNanos)
+        val measured = if (depth.available && rawDepth.update(frame)) rawDepth else null
+        planeRenderer.update(session, frame, content.walls, depth.available, measured, arCamera.pose, frameTimeNanos)
         referenceCube.place(content.referenceCubePose)
         wallMarker.place(content.wallMarkerPose)
 

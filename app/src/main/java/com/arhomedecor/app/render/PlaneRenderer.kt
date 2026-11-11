@@ -31,9 +31,10 @@ import kotlin.math.hypot
 class PlaneRenderer(
     private val engine: Engine,
     private val scene: Scene,
-    material: Material,
+    private val material: Material,
 ) {
-    private class PlaneMesh(val entity: Int) {
+    /** One drawn plane, with its own material instance so it can have its own coverage map. */
+    private class PlaneMesh(val entity: Int, val instance: MaterialInstance) {
         lateinit var vertexBuffer: VertexBuffer
         lateinit var indexBuffer: IndexBuffer
         var capacity = 0
@@ -43,6 +44,17 @@ class PlaneRenderer(
         /** Whether the current geometry was sized for depth trimming (see [update]). */
         var builtForDepth = false
         var lastBuildNanos = 0L
+        /** The outline as drawn ((u, v) pairs in the mesh's frame), which coverage must span. */
+        var drawnOutline = FloatArray(0)
+
+        // Coverage map texture (see SurfaceCoverage) and the world rectangle it spans.
+        var coverageTexture: Texture? = null
+        var coverageColumns = 0
+        var coverageRows = 0
+        var coverageMinX = 0f
+        var coverageMinZ = 0f
+        var coverageVersion = -1
+        var lastCoverageUploadNanos = 0L
     }
 
     /** Classification of each tracked ARCore plane from the last update. */
@@ -56,39 +68,39 @@ class PlaneRenderer(
     /** For each upward plane, the highest the camera has been above it (see [classifyUpward]). */
     private val maxCameraAbove = HashMap<Plane, Float>()
 
+    /** Where each floor and raised surface has been confirmed by measured depth. */
+    private val coverage = HashMap<Plane, SurfaceCoverage>()
+
     fun kindOf(plane: Plane): PlaneKind? = kinds[plane]
 
-    /**
-     * One material instance per kind of ARCore plane (colour differs, depth inputs are shared),
-     * plus one for walls marked by hand: their outline is not ARCore's, so depth must confirm
-     * the wall everywhere (see fullCheckInside in plane.mat).
-     */
-    private val kindMaterials: Map<PlaneKind, MaterialInstance> =
-        PlaneKind.entries.associateWith { createMaterialInstance(material, it, fullCheckInside = false) }
-    private val markedWallMaterial = createMaterialInstance(material, PlaneKind.WALL, fullCheckInside = true)
-    private val allMaterials = kindMaterials.values + markedWallMaterial
+    // Inputs shared by every plane's material instance, applied to each one as it is drawn.
+    private var depthTexture: Texture? = null
+    private val ndcToUv = FloatArray(6)
+    private var uvToNdc = FloatArray(6)
+    private val projectionScaleOffset = FloatArray(4)
+    private var depthEnabled = false
+    private var debugView = false
 
-    private fun createMaterialInstance(material: Material, kind: PlaneKind, fullCheckInside: Boolean) =
-        material.createInstance().apply {
-            val (r, g, b, a) = colorFor(kind)
-            setParameter("color", r, g, b, a)
-            setParameter("gridSpacing", GRID_SPACING_METRES)
-            setParameter("depthEnabled", 0f)
-            setParameter("fullCheckInside", if (fullCheckInside) 1f else 0f)
-            setParameter("baseTolerance", if (kind == PlaneKind.WALL) WALL_TOLERANCE_METRES else TOLERANCE_METRES)
-            setParameter("minNormalAgreement", if (kind == PlaneKind.WALL) WALL_MIN_NORMAL_AGREEMENT else MIN_NORMAL_AGREEMENT)
-            setParameter("debugView", 0f)
-        }
-
-    /** Development aid: colour planes by how far the real surface is from them (see plane.mat). */
-    fun setDebugView(enabled: Boolean) {
-        for (instance in allMaterials) instance.setParameter("debugView", if (enabled) 1f else 0f)
-    }
-    private val depthSampler = TextureSampler(
+    private val linearSampler = TextureSampler(
         TextureSampler.MinFilter.LINEAR,
         TextureSampler.MagFilter.LINEAR,
         TextureSampler.WrapMode.CLAMP_TO_EDGE,
     )
+
+    /** Bound for planes without a coverage map: nothing confirmed. */
+    private val noCoverage: Texture = Texture.Builder()
+        .width(1)
+        .height(1)
+        .levels(1)
+        .sampler(Texture.Sampler.SAMPLER_2D)
+        .format(Texture.InternalFormat.R8)
+        .build(engine)
+        .also { uploadR8(it, ByteArray(1), 1, 1) }
+
+    /** Development aid: colour planes by how far the real surface is from them (see plane.mat). */
+    fun setDebugView(enabled: Boolean) {
+        debugView = enabled
+    }
 
     /** Keyed by ARCore [Plane] or [ManualWall]. */
     private val meshes = HashMap<Any, PlaneMesh>()
@@ -130,16 +142,14 @@ class PlaneRenderer(
      * image; planes are then drawn unchecked.
      */
     fun setDepthInputs(texture: Texture, ndcToUv: FloatArray, projection: FloatArray, enabled: Boolean) {
-        val uvToNdc = invertAffine2d(ndcToUv)
-        for (instance in allMaterials) {
-            instance.setParameter("depthTexture", texture, depthSampler)
-            instance.setParameter("uvFromNdcU", ndcToUv[0], ndcToUv[1], ndcToUv[2])
-            instance.setParameter("uvFromNdcV", ndcToUv[3], ndcToUv[4], ndcToUv[5])
-            instance.setParameter("ndcFromUvX", uvToNdc[0], uvToNdc[1], uvToNdc[2])
-            instance.setParameter("ndcFromUvY", uvToNdc[3], uvToNdc[4], uvToNdc[5])
-            instance.setParameter("projectionScaleOffset", projection[0], projection[5], projection[8], projection[9])
-            instance.setParameter("depthEnabled", if (enabled) 1f else 0f)
-        }
+        depthTexture = texture
+        ndcToUv.copyInto(this.ndcToUv)
+        uvToNdc = invertAffine2d(ndcToUv)
+        projectionScaleOffset[0] = projection[0]
+        projectionScaleOffset[1] = projection[5]
+        projectionScaleOffset[2] = projection[8]
+        projectionScaleOffset[3] = projection[9]
+        depthEnabled = enabled
     }
 
     /**
@@ -155,6 +165,7 @@ class PlaneRenderer(
         frame: Frame,
         manualWalls: Collection<ManualWall>,
         depthAvailable: Boolean,
+        measured: RawDepthPoints?,
         cameraPose: Pose,
         nowNanos: Long,
     ) {
@@ -225,7 +236,8 @@ class PlaneRenderer(
         }
         val redundant = redundantPlanes(upwardFootprints, upward.map { newKinds.getValue(it) }).map { upward[it] }.toHashSet()
 
-        val renderables = engine.renderableManager
+        updateCoverage(upward, upwardInfo, newKinds, measured)
+
         val visible = HashSet<Any>()
         val raised = ArrayList<Float>()
         var floors = 0
@@ -250,7 +262,7 @@ class PlaneRenderer(
                     continue // not visible: hidden by the loop below
                 }
             }
-            val mesh = meshes.getOrPut(plane) { createMesh() }
+            val mesh = meshes.getOrPut(plane) { createMesh(kind, fullCheckInside = false) }
             val rebuildDue = plane in updated && nowNanos - mesh.lastBuildNanos >= REBUILD_INTERVAL_NANOS
             // With depth, the outline is enlarged by an amount that depends on the kind.
             val kindChangesSize = depthAvailable && mesh.kind != null && mesh.kind != kind
@@ -261,16 +273,18 @@ class PlaneRenderer(
                 val outline = FloatArray(polygon.remaining()) { polygon.get(it) }
                 val dilation = if (depthAvailable) depthExpansionFor(kind) else 0f
                 val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
-                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind, kindMaterials.getValue(kind))) continue
+                if (!updateGeometry(outline, dilation, PLANE_AXIS_X, PLANE_AXIS_Z, feather, mesh, kind)) continue
                 mesh.builtForDepth = depthAvailable
                 mesh.lastBuildNanos = nowNanos
             }
 
             if (kind != mesh.kind) {
-                renderables.setMaterialInstanceAt(renderables.getInstance(mesh.entity), 0, kindMaterials.getValue(kind))
+                applyKind(mesh.instance, kind, fullCheckInside = false)
                 mesh.kind = kind
             }
             show(mesh, pose)
+            val surfaceCoverage = if (kind == PlaneKind.FLOOR || kind == PlaneKind.RAISED_SURFACE) coverage[plane] else null
+            bindInputs(mesh, pose, surfaceCoverage, nowNanos)
             visible += plane
             when (kind) {
                 PlaneKind.FLOOR -> floors++
@@ -284,13 +298,15 @@ class PlaneRenderer(
         var marked = 0
         for (wall in manualWalls) {
             if (wall.anchor.trackingState != TrackingState.TRACKING) continue
-            val mesh = meshes.getOrPut(wall) { createMesh() }
+            // Its outline is not ARCore's, so depth must confirm the wall everywhere.
+            val mesh = meshes.getOrPut(wall) { createMesh(PlaneKind.WALL, fullCheckInside = true) }
             val feather = if (depthAvailable) DEPTH_FEATHER_METRES else FEATHER_METRES
             if (!mesh.hasRenderable || mesh.builtForDepth != depthAvailable) {
-                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL, markedWallMaterial)) continue
+                if (!updateGeometry(wall.outline, 0f, wall.alongWall, UP, feather, mesh, PlaneKind.WALL)) continue
                 mesh.builtForDepth = depthAvailable
             }
             show(mesh, wall.anchor.pose)
+            bindInputs(mesh, wall.anchor.pose, null, nowNanos)
             visible += wall
             marked++
         }
@@ -500,16 +516,171 @@ class PlaneRenderer(
     fun destroy() {
         meshes.values.forEach(::destroyMesh)
         meshes.clear()
-        allMaterials.forEach(engine::destroyMaterialInstance)
+        engine.destroyTexture(noCoverage)
     }
 
-    private fun createMesh(): PlaneMesh {
+    private fun createMesh(kind: PlaneKind, fullCheckInside: Boolean): PlaneMesh {
         val entity = EntityManager.get().create()
-        val mesh = PlaneMesh(entity)
+        val mesh = PlaneMesh(entity, material.createInstance())
+        applyKind(mesh.instance, kind, fullCheckInside)
         allocateBuffers(mesh, INITIAL_CAPACITY)
         engine.transformManager.create(entity)
         // The renderable itself is built on the first geometry update, once there is real data.
         return mesh
+    }
+
+    /**
+     * Material parameters that depend on what the plane is. [fullCheckInside] is for outlines
+     * that are not ARCore's (walls marked by hand): see fullCheckInside in plane.mat.
+     */
+    private fun applyKind(instance: MaterialInstance, kind: PlaneKind, fullCheckInside: Boolean) {
+        val (r, g, b, a) = colorFor(kind)
+        instance.setParameter("color", r, g, b, a)
+        instance.setParameter("gridSpacing", GRID_SPACING_METRES)
+        instance.setParameter("fullCheckInside", if (fullCheckInside) 1f else 0f)
+        instance.setParameter("checkBehindInside", if (kind == PlaneKind.RAISED_SURFACE) 1f else 0f)
+        instance.setParameter("baseTolerance", if (kind == PlaneKind.WALL) WALL_TOLERANCE_METRES else TOLERANCE_METRES)
+        instance.setParameter("minNormalAgreement", if (kind == PlaneKind.WALL) WALL_MIN_NORMAL_AGREEMENT else MIN_NORMAL_AGREEMENT)
+    }
+
+    /**
+     * Sets the per-frame inputs on a plane's material: depth image and camera, and the plane's
+     * coverage map ([surfaceCoverage], null for planes without one), whose texture is refreshed
+     * when the coverage has changed, at most every [COVERAGE_UPLOAD_INTERVAL_NANOS].
+     */
+    private fun bindInputs(mesh: PlaneMesh, pose: Pose, surfaceCoverage: SurfaceCoverage?, nowNanos: Long) {
+        val instance = mesh.instance
+        depthTexture?.let { instance.setParameter("depthTexture", it, linearSampler) }
+        instance.setParameter("uvFromNdcU", ndcToUv[0], ndcToUv[1], ndcToUv[2])
+        instance.setParameter("uvFromNdcV", ndcToUv[3], ndcToUv[4], ndcToUv[5])
+        instance.setParameter("ndcFromUvX", uvToNdc[0], uvToNdc[1], uvToNdc[2])
+        instance.setParameter("ndcFromUvY", uvToNdc[3], uvToNdc[4], uvToNdc[5])
+        val p = projectionScaleOffset
+        instance.setParameter("projectionScaleOffset", p[0], p[1], p[2], p[3])
+        instance.setParameter("depthEnabled", if (depthEnabled) 1f else 0f)
+        instance.setParameter("debugView", if (debugView) 1f else 0f)
+
+        val useCoverage = depthEnabled && surfaceCoverage != null
+        instance.setParameter("coverageEnabled", if (useCoverage) 1f else 0f)
+        if (!useCoverage) {
+            instance.setParameter("coverageTexture", noCoverage, linearSampler)
+            return
+        }
+        pose.toMatrix(transform, 0)
+        if (surfaceCoverage!!.version != mesh.coverageVersion &&
+            nowNanos - mesh.lastCoverageUploadNanos >= COVERAGE_UPLOAD_INTERVAL_NANOS
+        ) {
+            uploadCoverage(mesh, transform, surfaceCoverage)
+            mesh.coverageVersion = surfaceCoverage.version
+            mesh.lastCoverageUploadNanos = nowNanos
+        }
+        val texture = mesh.coverageTexture ?: noCoverage
+        instance.setParameter("coverageTexture", texture, linearSampler)
+        // Mesh-local (u, v) -> world (x, z) -> texture coordinates. The texture spans whole
+        // cells from (coverageMinX, coverageMinZ).
+        val width = mesh.coverageColumns * COVERAGE_CELL_METRES
+        val height = mesh.coverageRows * COVERAGE_CELL_METRES
+        if (width <= 0f || height <= 0f) return
+        val m = transform
+        instance.setParameter("coverageFromLocalU", m[0] / width, m[8] / width, (m[12] - mesh.coverageMinX) / width)
+        instance.setParameter("coverageFromLocalV", m[2] / height, m[10] / height, (m[14] - mesh.coverageMinZ) / height)
+    }
+
+    /** Redraws the coverage texture over the world rectangle the plane is drawn in. */
+    private fun uploadCoverage(mesh: PlaneMesh, poseMatrix: FloatArray, surfaceCoverage: SurfaceCoverage) {
+        val outline = mesh.drawnOutline
+        if (outline.size < 6) return
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minZ = Float.MAX_VALUE
+        var maxZ = -Float.MAX_VALUE
+        val m = poseMatrix
+        for (i in 0 until outline.size / 2) {
+            val u = outline[i * 2]
+            val v = outline[i * 2 + 1]
+            val x = m[0] * u + m[8] * v + m[12]
+            val z = m[2] * u + m[10] * v + m[14]
+            minX = minOf(minX, x)
+            maxX = maxOf(maxX, x)
+            minZ = minOf(minZ, z)
+            maxZ = maxOf(maxZ, z)
+        }
+        // Whole cells, one spare each side so edge cells interpolate towards "unconfirmed".
+        val firstColumn = SurfaceCoverage.cellIndex(minX) - 1
+        val firstRow = SurfaceCoverage.cellIndex(minZ) - 1
+        val columns = (SurfaceCoverage.cellIndex(maxX) + 2 - firstColumn).coerceIn(1, MAX_COVERAGE_CELLS)
+        val rows = (SurfaceCoverage.cellIndex(maxZ) + 2 - firstRow).coerceIn(1, MAX_COVERAGE_CELLS)
+        val cellMinX = firstColumn * COVERAGE_CELL_METRES
+        val cellMinZ = firstRow * COVERAGE_CELL_METRES
+        if (mesh.coverageTexture == null || mesh.coverageColumns != columns || mesh.coverageRows != rows) {
+            mesh.coverageTexture?.let(engine::destroyTexture)
+            mesh.coverageTexture = Texture.Builder()
+                .width(columns)
+                .height(rows)
+                .levels(1)
+                .sampler(Texture.Sampler.SAMPLER_2D)
+                .format(Texture.InternalFormat.R8)
+                .build(engine)
+            mesh.coverageColumns = columns
+            mesh.coverageRows = rows
+        }
+        val values = ByteArray(columns * rows)
+        // Sample at cell centres so that rounding never lands on a neighbouring cell.
+        surfaceCoverage.rasterize(cellMinX + COVERAGE_CELL_METRES / 2, cellMinZ + COVERAGE_CELL_METRES / 2, columns, rows, values)
+        uploadR8(mesh.coverageTexture!!, values, columns, rows)
+        mesh.coverageMinX = cellMinX
+        mesh.coverageMinZ = cellMinZ
+    }
+
+    // Texture.PixelBufferDescriptor is deprecated in favour of the top-level class, but
+    // Texture.setImage() in Filament 1.77 only accepts the nested type.
+    @Suppress("DEPRECATION")
+    private fun uploadR8(texture: Texture, values: ByteArray, width: Int, height: Int) {
+        val buffer = java.nio.ByteBuffer.allocateDirect(width * height).put(values, 0, width * height)
+        buffer.flip()
+        // Rows are tightly packed bytes; GL's default row alignment of 4 would misread them.
+        texture.setImage(
+            engine,
+            0,
+            Texture.PixelBufferDescriptor(buffer, Texture.Format.R, Texture.Type.UBYTE, 1),
+        )
+    }
+
+    /**
+     * Folds the coverage of planes ARCore merged into the plane that absorbed them, forgets
+     * discarded planes, and adds the latest measured depth to every floor and raised surface.
+     */
+    private fun updateCoverage(
+        upward: List<Plane>,
+        upwardInfo: List<HorizontalPlaneInfo>,
+        newKinds: Map<Plane, PlaneKind>,
+        measured: RawDepthPoints?,
+    ) {
+        val iterator = coverage.entries.iterator()
+        val absorbed = ArrayList<Pair<Plane, SurfaceCoverage>>()
+        while (iterator.hasNext()) {
+            val (plane, planeCoverage) = iterator.next()
+            var survivor = plane
+            while (true) survivor = survivor.subsumedBy ?: break
+            if (survivor != plane) absorbed += survivor to planeCoverage
+            if (survivor != plane || plane.trackingState == TrackingState.STOPPED) iterator.remove()
+        }
+        for ((survivor, planeCoverage) in absorbed) {
+            if (survivor.trackingState != TrackingState.STOPPED) coverage.getOrPut(survivor) { SurfaceCoverage() }.absorb(planeCoverage)
+        }
+        if (measured == null || measured.count == 0) return
+        upward.forEachIndexed { i, plane ->
+            val kind = newKinds[plane]
+            if (kind != PlaneKind.FLOOR && kind != PlaneKind.RAISED_SURFACE) return@forEachIndexed
+            coverage.getOrPut(plane) { SurfaceCoverage() }.observe(
+                measured.points,
+                measured.count,
+                measured.cameraPosition,
+                upwardInfo[i].y,
+                // Below a floor there are only reflections; below a table, the floor beyond its edge.
+                countsAgainst = kind == PlaneKind.RAISED_SURFACE,
+            )
+        }
     }
 
     /**
@@ -530,7 +701,6 @@ class PlaneRenderer(
         feather: Float,
         mesh: PlaneMesh,
         kind: PlaneKind,
-        instance: MaterialInstance,
     ): Boolean {
         val vertexCount = outline.size / 2
         if (vertexCount < 3) return false
@@ -542,6 +712,7 @@ class PlaneRenderer(
         }
 
         val enlarged = dilateConvexOutline(outline, dilation)
+        mesh.drawnOutline = enlarged
         val opaque = insetConvexOutline(enlarged, feather)
         val rings = arrayOf(enlarged, opaque, if (dilation > feather) outline else opaque)
         val margin = if (dilation > 0f) 1f else 0f
@@ -571,7 +742,7 @@ class PlaneRenderer(
         if (!mesh.hasRenderable) {
             RenderableManager.Builder(1)
                 .geometry(0, RenderableManager.PrimitiveType.TRIANGLES, mesh.vertexBuffer, mesh.indexBuffer, 0, indices.size)
-                .material(0, instance)
+                .material(0, mesh.instance)
                 .culling(false)
                 .castShadows(false)
                 .receiveShadows(false)
@@ -609,6 +780,8 @@ class PlaneRenderer(
         if (mesh.inScene) scene.remove(mesh.entity)
         engine.destroyEntity(mesh.entity)
         EntityManager.get().destroy(mesh.entity)
+        engine.destroyMaterialInstance(mesh.instance)
+        mesh.coverageTexture?.let(engine::destroyTexture)
         engine.destroyVertexBuffer(mesh.vertexBuffer)
         engine.destroyIndexBuffer(mesh.indexBuffer)
     }
@@ -656,6 +829,12 @@ class PlaneRenderer(
 
         /** Vertex rings per plane mesh (see [updateGeometry]). */
         const val RINGS = 3
+
+        /** Coverage textures are redrawn at most 5 times a second per plane. */
+        const val COVERAGE_UPLOAD_INTERVAL_NANOS = 200_000_000L
+
+        /** Coverage textures span at most this many cells each way (10 m at 4 cm). */
+        const val MAX_COVERAGE_CELLS = 256
         const val INITIAL_CAPACITY = 16
 
         // Linear RGB + alpha.

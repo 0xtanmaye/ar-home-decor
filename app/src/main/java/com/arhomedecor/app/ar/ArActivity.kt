@@ -559,7 +559,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                     "cube=${s.cubeDistanceMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
                     "cpuMsAvg=${String.format(Locale.US, "%.1f", frameCpuNanosTotal / 1e6 / maxOf(framesTimed, 1))} " +
                     "cpuMsMax=${String.format(Locale.US, "%.1f", frameCpuNanosMax / 1e6)} " +
-                    "${renderer.depth.takeTimingSummary()} " +
+                    "${renderer.depth.takeTimingSummary()} ${renderer.takeRawDepthSummary()} " +
                     "session=${when {
                         recorder.isPlayingBack -> "playback:${recorder.playbackName}"
                         recorder.recordingName != null -> "recording:${recorder.recordingName}"

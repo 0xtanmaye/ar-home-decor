@@ -40,6 +40,14 @@ material {
             name : baseTolerance
         },
         {
+            // 1 for raised surfaces: inside ARCore's outline, where measured depth hasn't
+            // confirmed the surface yet, hide it where this frame's depth sees clearly behind it
+            // (ARCore merges a desk and a lower cabinet into one outline that spans the gap).
+            // 0 for floors and ceilings: below a floor there are only reflections.
+            type : float,
+            name : checkBehindInside
+        },
+        {
             // Cosine of the largest angle between the real surface (from depth) and the plane
             // at which they still count as the same surface; 0 turns the check off. Stops a
             // surface that merely passes through the plane, such as a wall at table height,
@@ -50,7 +58,9 @@ material {
         {
             // 1 to colour each pixel by the depth check instead of drawing the grid
             // (development aid): green = on the plane, red = in front of it, blue = behind it,
-            // yellow = at the plane's distance but facing another way.
+            // yellow = at the plane's distance but facing another way, grey = margin not (yet)
+            // confirmed by measured depth, magenta = repeatedly seen through, white line = edge
+            // of ARCore's own outline.
             type : float,
             name : debugView
         },
@@ -77,6 +87,27 @@ material {
             // view-space ray.
             type : float4,
             name : projectionScaleOffset
+        },
+        {
+            // What measured depth has shown over time about where the surface really is, in
+            // world (x, z): 0.5 = no clear evidence, 1 = confirmed, 0 = seen through (see
+            // SurfaceCoverage). With coverageEnabled = 1 it takes over from the per-frame check,
+            // which on plain or glossy surfaces trusts filled-in depth (see material()).
+            type : sampler2d,
+            name : coverageTexture
+        },
+        {
+            type : float,
+            name : coverageEnabled
+        },
+        {
+            // Affine map from the mesh's local (u, v, 1) (uv0) to coverage texture coordinates.
+            type : float3,
+            name : coverageFromLocalU
+        },
+        {
+            type : float3,
+            name : coverageFromLocalV
         }
     ],
     requires : [
@@ -128,13 +159,20 @@ fragment {
         return abs(dot(normal, planeNormal)) * inversesqrt(length2);
     }
 
-    // How much of this plane pixel to draw, given the real surface seen through it: 0 where
-    // something clearly covers the plane. In the margin beyond ARCore's outline (see
-    // fullCheckInside) also 0 where the real surface is clearly behind the plane (it overhangs
-    // a real edge) or at the plane's distance but facing another way. debugColor receives the
-    // debug view's colour.
-    float depthVisibility(float margin, out vec3 debugColor) {
-        debugColor = vec3(0.0, 1.0, 0.0);
+    // What this frame's depth image says about the real surface seen through this pixel.
+    struct DepthCheck {
+        // 0 where something clearly covers the plane (the real surface is in front of it).
+        float uncovered;
+        // 1 where the real surface is the plane: at its distance and facing the same way (not,
+        // for example, a wall where it passes through a table's height).
+        float onPlane;
+        // 0 where the real surface is clearly behind the plane (seen past its edge).
+        float notBehind;
+        vec3 debugColor;
+    };
+
+    DepthCheck checkDepth() {
+        DepthCheck result = DepthCheck(1.0, 1.0, 1.0, vec3(0.0, 1.0, 0.0));
         highp vec3 viewPosition = (getViewFromWorldMatrix() * vec4(getWorldPosition(), 1.0)).xyz;
         // The plane's normal from how the position changes across the screen (exact for a
         // flat polygon). Screen-space derivatives must be taken before any branching.
@@ -143,7 +181,7 @@ fragment {
         highp vec2 depthUv = vec2(dot(materialParams.uvFromNdcU, ndc), dot(materialParams.uvFromNdcV, ndc));
         highp float realDepth = textureLod(materialParams_depthTexture, depthUv, 0.0).r;
         if (realDepth <= 0.0) {
-            return 1.0;
+            return result;
         }
         highp float planeDepth = -viewPosition.z;
         // The camera's distance to the plane along its normal.
@@ -158,25 +196,29 @@ fragment {
         highp float tolerance = materialParams.baseTolerance + DEPTH_NOISE_PER_METRE * planeDepth * alongNormal;
 
         highp float t = clamp(offset / (2.0 * tolerance), -1.0, 1.0);
-        debugColor = vec3(max(t, 0.0), 1.0 - abs(t), max(-t, 0.0));
-
-        // Covered by something in front: applies everywhere.
-        float uncovered = 1.0 - smoothstep(tolerance, 2.0 * tolerance, offset);
-        float strictness = max(materialParams.fullCheckInside, margin);
-        if (strictness == 0.0) {
-            return uncovered;
-        }
-        float confirmed = 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(offset));
-        if (confirmed > 0.0 && materialParams.minNormalAgreement > 0.0) {
-            float facing = smoothstep(
+        result.debugColor = vec3(max(t, 0.0), 1.0 - abs(t), max(-t, 0.0));
+        result.uncovered = 1.0 - smoothstep(tolerance, 2.0 * tolerance, offset);
+        result.notBehind = 1.0 - smoothstep(tolerance, 2.0 * tolerance, -offset);
+        float atPlaneDistance = 1.0 - smoothstep(tolerance, 2.0 * tolerance, abs(offset));
+        float facing = 1.0;
+        if (atPlaneDistance > 0.0 && materialParams.minNormalAgreement > 0.0) {
+            facing = smoothstep(
                 materialParams.minNormalAgreement - NORMAL_FADE,
                 materialParams.minNormalAgreement,
                 normalAgreement(depthUv, planeNormal));
-            debugColor = mix(vec3(1.0, 1.0, 0.0), debugColor, facing);
-            confirmed *= facing;
+            result.debugColor = mix(vec3(1.0, 1.0, 0.0), result.debugColor, facing);
         }
-        return mix(uncovered, confirmed, strictness);
+        result.onPlane = atPlaneDistance * facing;
+        return result;
     }
+
+    // Coverage map values (see coverageValue in SurfaceCoverage.kt): 0.5 = no clear evidence,
+    // 0.625 / 0.75 / 0.875 / 1 = the surface was measured there in 1 / 2 / 3 / 4+ more frames
+    // than it was seen through, 0 = refuted (seen through, hardly ever seen).
+    #define CONFIRMED_FROM 0.6
+    #define CONFIRMED_AT 0.85
+    #define REFUTED_FROM 0.3
+    #define REFUTED_AT 0.1
 
     void material(inout MaterialInputs material) {
         prepareMaterial(material);
@@ -187,13 +229,47 @@ fragment {
 
         vec4 color = materialParams.color;
         // uv1.x fades from 0 on the drawn outline to 1 a short distance inside it. uv1.y rises
-        // from 0 on ARCore's outline across the margin drawn beyond it; the margin's checks
+        // from 0 on ARCore's outline across the margin drawn beyond it; the margin's rules
         // apply in full a few centimetres out.
         float edge = getUV1().x;
+        float marginGradient = fwidth(getUV1().y);
         float margin = smoothstep(0.0, 0.1, getUV1().y);
+
+        float visibility = 1.0;
         vec3 debugColor = vec3(0.0, 1.0, 0.0);
-        float visibility = materialParams.depthEnabled > 0.5 ? depthVisibility(margin, debugColor) : 1.0;
+        if (materialParams.depthEnabled > 0.5) {
+            DepthCheck depth = checkDepth();
+            debugColor = depth.debugColor;
+            if (materialParams.coverageEnabled > 0.5) {
+                highp vec3 local = vec3(getUV0(), 1.0);
+                highp vec2 coverageUv = vec2(dot(materialParams.coverageFromLocalU, local), dot(materialParams.coverageFromLocalV, local));
+                float coverage = texture(materialParams_coverageTexture, coverageUv).r;
+                float confirmed = smoothstep(CONFIRMED_FROM, CONFIRMED_AT, coverage);
+                float refuted = 1.0 - smoothstep(REFUTED_AT, REFUTED_FROM, coverage);
+                // Inside ARCore's outline the surface is there unless measurements keep seeing
+                // through it. Until measurements confirm a spot, a raised surface also yields to
+                // this frame's depth seeing clearly behind it (see checkBehindInside); once
+                // confirmed, reflections in a glossy top can't make it flicker. Orientation is
+                // too noisy on such tops to be used here. Beyond the outline, only what
+                // measurements have confirmed is drawn.
+                float notBehind = mix(1.0, depth.notBehind, materialParams.checkBehindInside);
+                float inside = (1.0 - refuted) * mix(notBehind, 1.0, confirmed);
+                visibility = depth.uncovered * mix(inside, confirmed, margin);
+                debugColor = mix(debugColor, vec3(1.0, 0.0, 1.0), refuted * (1.0 - margin));
+                debugColor = mix(debugColor, vec3(0.25), (1.0 - confirmed) * margin);
+            } else {
+                // Without a coverage map: inside ARCore's outline only something in front hides
+                // the plane; beyond it (and everywhere for outlines that are not ARCore's) this
+                // frame's depth must confirm the surface.
+                float strictness = max(materialParams.fullCheckInside, margin);
+                visibility = mix(depth.uncovered, depth.onPlane, strictness);
+            }
+        }
         if (materialParams.debugView > 0.5) {
+            // A white line just outside ARCore's own outline, where the margin starts.
+            if (marginGradient > 0.0 && getUV1().y < 2.0 * marginGradient) {
+                debugColor = vec3(1.0);
+            }
             float debugAlpha = 0.6 * edge;
             material.baseColor = vec4(debugColor * debugAlpha, debugAlpha);
             return;
