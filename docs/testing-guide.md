@@ -7,7 +7,7 @@ How to run the AR view so that results are reliable and repeatable.
 - **Phone:** battery above 30% or plugged in, battery saver **off** (it throttles the GPU and lowers FPS), camera lens wiped clean. For sessions longer than about 15 minutes, keep it charging.
 - **Screen:** Developer options → **Stay awake** keeps the screen on while charging, so it doesn't lock mid-test.
 - **Room:** lights on and as even as possible. Avoid patches of direct sunlight and strong glare on glossy floors.
-- **Logs and screenshots** (only needed when the VM should read results): Wireless debugging on, then run `./tools/connect-phone.sh` on the VM.
+- **Logs and screenshots** (developers only): Wireless debugging on, then run `./tools/connect-phone.sh` on the development machine (see the README's developer section).
 
 ## Scanning a room
 
