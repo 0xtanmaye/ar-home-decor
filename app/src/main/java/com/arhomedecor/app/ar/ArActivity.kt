@@ -247,6 +247,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         lastStatusNanos = frameTimeNanos
 
         val counts = renderer.planeCounts
+        val isTracking = camera.trackingState == TrackingState.TRACKING
+        val cameraHeight = renderer.floorY?.takeIf { isTracking }?.let { camera.pose.ty() - it }
         val cubeDistance = cubeAnchor?.takeIf { camera.trackingState == TrackingState.TRACKING }?.let { anchor ->
             val a = anchor.pose
             val c = camera.pose
@@ -261,7 +263,9 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 tracking = camera.trackingState,
                 failureReason = camera.trackingFailureReason,
                 floors = counts.floors,
+                raisedSurfaces = counts.raisedSurfaces,
                 walls = counts.walls,
+                cameraHeightMetres = cameraHeight,
                 cubeDistanceMetres = cubeDistance,
             )
         }
@@ -269,10 +273,13 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         if (frameTimeNanos - lastLogNanos >= LOG_INTERVAL_NANOS) {
             lastLogNanos = frameTimeNanos
             val s = status.value
+            val raised = renderer.raisedSurfaceHeights.joinToString(",") { String.format(Locale.US, "%.2f", it) }
             Log.i(
                 STATS_TAG,
                 "fps=${s.fps} tracking=${s.tracking} reason=${s.failureReason} floors=${s.floors} " +
-                    "walls=${s.walls} ceilings=${counts.ceilings} cube=${s.cubeDistanceMetres ?: "none"} " +
+                    "raised=[$raised] walls=${s.walls} ceilings=${counts.ceilings} " +
+                    "cameraHeight=${s.cameraHeightMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
+                    "cube=${s.cubeDistanceMetres?.let { String.format(Locale.US, "%.3f", it) } ?: "none"} " +
                     "frameTs=${frame.timestamp}",
             )
         }

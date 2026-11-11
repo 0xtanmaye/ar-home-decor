@@ -41,7 +41,12 @@ fun ArOverlay(status: ArStatus, cubeEdgeCentimetres: Int) {
             DebugLine("FPS", status.fps.toString())
             DebugLine("Tracking", trackingLabel(status))
             DebugLine("Floors", status.floors.toString())
+            DebugLine("Surfaces", status.raisedSurfaces.toString())
             DebugLine("Walls", status.walls.toString())
+            DebugLine(
+                "Height",
+                status.cameraHeightMetres?.let { String.format(Locale.US, "%.2f m above floor", it) } ?: "-",
+            )
             DebugLine(
                 "Cube",
                 status.cubeDistanceMetres?.let { String.format(Locale.US, "%.2f m away", it) } ?: "not placed",

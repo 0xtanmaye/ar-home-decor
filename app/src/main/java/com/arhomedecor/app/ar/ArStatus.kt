@@ -10,7 +10,11 @@ data class ArStatus(
     val tracking: TrackingState = TrackingState.PAUSED,
     val failureReason: TrackingFailureReason = TrackingFailureReason.NONE,
     val floors: Int = 0,
+    /** Tables, beds and other upward-facing surfaces above the floor. */
+    val raisedSurfaces: Int = 0,
     val walls: Int = 0,
+    /** Height of the phone's camera above the floor, or null until a floor is found. */
+    val cameraHeightMetres: Float? = null,
     /** Distance from the camera to the reference cube, or null if it hasn't been placed. */
     val cubeDistanceMetres: Float? = null,
     /** A blocking problem (e.g. ARCore missing); overrides the normal hint. */

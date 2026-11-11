@@ -69,6 +69,10 @@ class ArRenderer(
 
     val planeCounts: PlaneCounts get() = planeRenderer.counts
 
+    /** World-space height of the floor, or null until one is found. */
+    val floorY: Float? get() = planeRenderer.floorY
+    val raisedSurfaceHeights: List<Float> get() = planeRenderer.raisedSurfaceHeights
+
     init {
         view.setScene(scene)
         view.setCamera(camera)

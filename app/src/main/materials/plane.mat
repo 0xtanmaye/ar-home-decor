@@ -12,12 +12,15 @@ material {
         }
     ],
     requires : [
-        uv0
+        uv0,
+        uv1
     ],
     shadingModel : unlit,
     blending : transparent,
     culling : none,
-    depthWrite : false
+    depthWrite : false,
+    // uv0 is plane-local position in metres; keep it as-is.
+    flipUV : false
 }
 
 fragment {
@@ -29,7 +32,9 @@ fragment {
         float line = 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
 
         vec4 color = materialParams.color;
-        float alpha = mix(color.a, min(color.a * 3.0, 0.9), line);
+        // uv1.x fades from 0 on ARCore's outline to 1 a short distance inside it.
+        float edge = getUV1().x;
+        float alpha = mix(color.a, min(color.a * 3.0, 0.9), line) * edge;
         // Transparent blending in Filament expects premultiplied alpha.
         material.baseColor = vec4(color.rgb * alpha, alpha);
     }
