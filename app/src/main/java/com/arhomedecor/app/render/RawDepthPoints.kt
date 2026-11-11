@@ -50,6 +50,7 @@ class RawDepthPoints {
     private var pixelsKept = 0L
     private var pixelsOriented = 0L
     private var pixelsSteep = 0L
+    private var processingNanos = 0L
 
     /**
      * Reads the frame's raw depth image if it holds a new measurement. ARCore makes about ten
@@ -72,6 +73,7 @@ class RawDepthPoints {
         depthImage.use { depth ->
             if (depth.timestamp == lastImageTimestamp) return false
             lastImageTimestamp = depth.timestamp
+            val startNanos = System.nanoTime()
             val confidenceImage = try {
                 frame.acquireRawDepthConfidenceImage()
             } catch (e: NotYetAvailableException) {
@@ -99,14 +101,19 @@ class RawDepthPoints {
 
                 // Every pixel first, so that each point's neighbours can be looked up.
                 if (measured.size != width * height) measured = FloatArray(width * height)
+                // Strides are read once: each read is a call into the image, too slow per pixel.
                 val depthPlane = depth.planes[0]
                 val depthData = depthPlane.buffer.order(ByteOrder.LITTLE_ENDIAN)
+                val depthRowStride = depthPlane.rowStride
+                val depthPixelStride = depthPlane.pixelStride
                 val confidencePlane = confidence.planes[0]
                 val confidenceData = confidencePlane.buffer
+                val confidenceRowStride = confidencePlane.rowStride
+                val confidencePixelStride = confidencePlane.pixelStride
                 for (v in 0 until height) {
                     for (u in 0 until width) {
-                        val score = confidenceData.get(v * confidencePlane.rowStride + u * confidencePlane.pixelStride).toInt() and 0xFF
-                        val millimetres = depthData.getShort(v * depthPlane.rowStride + u * depthPlane.pixelStride).toInt() and 0xFFFF
+                        val score = confidenceData.get(v * confidenceRowStride + u * confidencePixelStride).toInt() and 0xFF
+                        val millimetres = depthData.getShort(v * depthRowStride + u * depthPixelStride).toInt() and 0xFFFF
                         val kept = score >= MIN_CONFIDENCE && millimetres in 1..MAX_DEPTH_MILLIMETRES
                         measured[v * width + u] = if (kept) millimetres / 1000f else 0f
                     }
@@ -141,31 +148,34 @@ class RawDepthPoints {
                 pixelsKept += kept
                 pixelsOriented += oriented
                 pixelsSteep += steepCount
+                processingNanos += System.nanoTime() - startNanos
             }
         }
         return true
     }
 
     /**
-     * "rawDepthImages=N rawDepthKept=P% rawDepthOriented=Q% rawDepthSteep=R%" since the last
-     * call: new estimates, share of pixels kept, and shares of kept points whose orientation could
-     * be estimated and that were steep.
+     * "rawDepthImages=N rawDepthKept=P% rawDepthOriented=Q% rawDepthSteep=R% rawDepthMs=T" since
+     * the last call: new estimates, share of pixels kept, shares of kept points whose orientation
+     * could be estimated and that were steep, and the average time spent on each image.
      */
     fun takeSummary(): String {
         fun percent(part: Long, whole: Long) = if (whole > 0) 100.0 * part / whole else 0.0
         val summary = String.format(
             Locale.US,
-            "rawDepthImages=%d rawDepthKept=%.0f%% rawDepthOriented=%.0f%% rawDepthSteep=%.0f%%",
+            "rawDepthImages=%d rawDepthKept=%.0f%% rawDepthOriented=%.0f%% rawDepthSteep=%.0f%% rawDepthMs=%.1f",
             newImages,
             percent(pixelsKept, pixelsSampled),
             percent(pixelsOriented, pixelsKept),
             percent(pixelsSteep, pixelsKept),
+            if (newImages > 0) processingNanos / 1e6 / newImages else 0.0,
         )
         newImages = 0
         pixelsSampled = 0L
         pixelsKept = 0L
         pixelsOriented = 0L
         pixelsSteep = 0L
+        processingNanos = 0L
         return summary
     }
 
