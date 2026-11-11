@@ -77,22 +77,32 @@ object DeviceCapabilityChecker {
         return availability
     }
 
+    /** Depth support can't change while the app runs, so a successful check is cached. */
+    @Volatile
+    private var cachedDepthSupport: DepthSupport? = null
+
     private suspend fun checkDepthSupport(context: Context): DepthSupport = withContext(Dispatchers.Default) {
-        try {
-            val session = Session(context)
-            try {
-                if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                    DepthSupport.SUPPORTED
-                } else {
-                    DepthSupport.NOT_SUPPORTED
-                }
-            } finally {
-                session.close()
+        cachedDepthSupport ?: synchronized(ArCoreSessionLock) {
+            cachedDepthSupport ?: queryDepthSupport(context).also {
+                if (it != DepthSupport.CHECK_FAILED) cachedDepthSupport = it
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not create ARCore session to check depth support", e)
-            DepthSupport.CHECK_FAILED
         }
+    }
+
+    private fun queryDepthSupport(context: Context): DepthSupport = try {
+        val session = Session(context)
+        try {
+            if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                DepthSupport.SUPPORTED
+            } else {
+                DepthSupport.NOT_SUPPORTED
+            }
+        } finally {
+            session.close()
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Could not create ARCore session to check depth support", e)
+        DepthSupport.CHECK_FAILED
     }
 
     private fun glEsVersion(context: Context): String {
