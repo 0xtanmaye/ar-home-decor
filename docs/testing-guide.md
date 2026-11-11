@@ -51,12 +51,13 @@ Tip: tap from 1–2 m away, looking at the base of the wall at an angle rather t
 
 ## Reporting a problem with a recording
 
-When something looks wrong, a recording lets it be replayed and examined as often as needed (debug builds only):
+When something looks wrong, a recording lets it be replayed and examined as often as needed. Test (debug) builds record every AR session automatically from the moment the AR screen opens, so there is nothing to start; the panel's **Session** line shows the time.
 
-1. Tap **Record session** before scanning. The panel's **Session** line counts the time.
-2. Start by pointing at the floor for a few seconds: a replay begins with an empty map, just like a fresh session.
-3. Reproduce the problem and keep it in view for a few seconds. Taps and mode changes are recorded too, so marking walls or placing the cube is fine.
-4. Tap **Stop recording** (leaving the AR screen also stops it). 20–60 seconds per problem is plenty.
+1. Start each session by pointing at the floor for a few seconds: a replay begins with an empty map, just like a fresh session.
+2. When a problem appears, keep it in view for a few seconds and tap **Mark problem**. The session's recording is kept and the moment is marked in it. Taps and mode changes are recorded too, so marking walls or placing the cube is fine.
+3. Leave the AR screen when you are done; that saves the recording as `session-<date>-<time>-marked.mp4` (see the README's "Reporting a problem" for copying it off the phone).
+
+Unmarked sessions are deleted after a while (the last 3 are kept), and a recording stops after 5 minutes: to record again, leave the AR screen and open it again.
 
 ## Accuracy checks
 

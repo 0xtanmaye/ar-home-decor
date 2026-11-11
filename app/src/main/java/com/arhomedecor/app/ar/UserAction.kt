@@ -14,6 +14,9 @@ sealed interface UserAction {
     data class SetMode(val mode: PlacementMode) : UserAction
 
     data object ClearWalls : UserAction
+
+    /** The user saw something wrong at this moment; the session's recording is kept. */
+    data object MarkProblem : UserAction
 }
 
 // Byte layout: format version, action type, then the action's fields (little-endian).
@@ -21,6 +24,7 @@ private const val FORMAT_VERSION: Byte = 1
 private const val TYPE_TAP: Byte = 1
 private const val TYPE_SET_MODE: Byte = 2
 private const val TYPE_CLEAR_WALLS: Byte = 3
+private const val TYPE_MARK_PROBLEM: Byte = 4
 
 fun UserAction.encode(): ByteBuffer {
     val buffer = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
@@ -29,6 +33,7 @@ fun UserAction.encode(): ByteBuffer {
         is UserAction.Tap -> buffer.put(TYPE_TAP).putFloat(x).putFloat(y)
         is UserAction.SetMode -> buffer.put(TYPE_SET_MODE).put(mode.ordinal.toByte())
         UserAction.ClearWalls -> buffer.put(TYPE_CLEAR_WALLS)
+        UserAction.MarkProblem -> buffer.put(TYPE_MARK_PROBLEM)
     }
     buffer.flip()
     return buffer
@@ -46,6 +51,7 @@ fun decodeUserAction(data: ByteBuffer): UserAction? {
             null
         }
         TYPE_CLEAR_WALLS -> UserAction.ClearWalls
+        TYPE_MARK_PROBLEM -> UserAction.MarkProblem
         else -> null
     }
 }

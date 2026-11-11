@@ -49,10 +49,14 @@ data class ArStatus(
      * the camera sees an already-scanned area.
      */
     val mapOnHold: Boolean = false,
-    /** Debuggable build: offer session recording. */
+    /** Debuggable build: sessions are recorded, and problems can be marked in them. */
     val devTools: Boolean = false,
     /** Seconds recorded so far, or null when not recording. */
     val recordingSeconds: Int? = null,
+    /** A problem has been marked in the recording in progress, so it will be kept. */
+    val problemMarked: Boolean = false,
+    /** The recording stopped at its length limit; the session continues unrecorded. */
+    val recordingLimitReached: Boolean = false,
     /** Name of the recording being played back instead of the camera, or null when live. */
     val playback: String? = null,
 )
@@ -63,12 +67,24 @@ const val MAP_ON_HOLD_HINT =
 const val MAP_RESET_NOTICE = "Tracking was reset, so detected surfaces were cleared. Scan the floor again."
 const val PLAYBACK_FINISHED_NOTICE = "Playback finished."
 const val WALL_TAPS_TOO_CLOSE_NOTICE = "Those points are too close together. Tap further along the wall."
+const val PROBLEM_MARKED_NOTICE = "Problem marked. This session's recording will be kept."
+const val PROBLEM_MARKED_IN_PLAYBACK_NOTICE = "A problem was marked here."
+const val NOT_RECORDING_NOTICE =
+    "This session isn't being recorded any more. Leave this screen and open it again to record a new one."
 
-/** "live", "recording 1:05" or "playback rec-….mp4". */
+/**
+ * "live", "recording 1:05", "recording 1:05, problem marked", "not recorded after 5:00" or
+ * "playback session-….mp4".
+ */
 fun sessionLabel(status: ArStatus): String {
     status.playback?.let { return "playback $it" }
+    if (status.recordingLimitReached) {
+        val limit = SessionRecorder.MAX_RECORDING_SECONDS
+        return String.format(Locale.US, "not recorded after %d:%02d", limit / 60, limit % 60)
+    }
     val seconds = status.recordingSeconds ?: return "live"
-    return String.format(Locale.US, "recording %d:%02d", seconds / 60, seconds % 60)
+    val marked = if (status.problemMarked) ", problem marked" else ""
+    return String.format(Locale.US, "recording %d:%02d%s", seconds / 60, seconds % 60, marked)
 }
 
 fun trackingLabel(status: ArStatus): String = when (status.tracking) {

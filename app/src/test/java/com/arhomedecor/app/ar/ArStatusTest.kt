@@ -14,6 +14,8 @@ class ArStatusTest {
         assertEquals("live", sessionLabel(tracking))
         assertEquals("recording 1:05", sessionLabel(tracking.copy(recordingSeconds = 65)))
         assertEquals("playback rec-1.mp4", sessionLabel(tracking.copy(playback = "rec-1.mp4")))
+        assertEquals("recording 0:42, problem marked", sessionLabel(tracking.copy(recordingSeconds = 42, problemMarked = true)))
+        assertEquals("not recorded after 5:00", sessionLabel(tracking.copy(recordingLimitReached = true)))
     }
 
     @Test

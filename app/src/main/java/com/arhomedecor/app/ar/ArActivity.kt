@@ -106,6 +106,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
     private var playbackRequest: String? = null
     private var recordingStartNanos = 0L
     private var recordModeOnNextFrame = false
+    private var recordingLimitReached = false
     private var playbackEndLogged = false
 
     private val choreographer: Choreographer = Choreographer.getInstance()
@@ -150,7 +151,7 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                         CUBE_EDGE_CENTIMETRES,
                         onModeChange = { enqueue(UserAction.SetMode(it)) },
                         onClearWalls = { enqueue(UserAction.ClearWalls) },
-                        onToggleRecording = ::toggleRecording,
+                        onMarkProblem = { enqueue(UserAction.MarkProblem) },
                     )
                 }
             }
@@ -196,15 +197,32 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
         }
         running = true
         choreographer.postFrameCallback(this)
+        if (devTools && !recorder.isPlayingBack) startRecording(activeSession)
     }
 
     override fun onPause() {
         super.onPause()
         running = false
         choreographer.removeFrameCallback(this)
+        // Stopped before pausing, so that a marked recording is renamed (pausing would also end it).
+        session?.let(recorder::stopRecording)
         session?.pause()
-        session?.let(recorder::checkRecording) // pausing ends a recording
-        status.update { it.copy(recordingSeconds = null) }
+        status.update { it.copy(recordingSeconds = null, problemMarked = false, recordingLimitReached = false) }
+    }
+
+    /**
+     * Debug builds record every live session from the start, so that whatever goes wrong can be
+     * replayed (see [SessionRecorder]). Each return to this screen starts a new recording.
+     */
+    private fun startRecording(session: Session) {
+        if (recorder.startRecording(session)) {
+            recordingStartNanos = System.nanoTime() // the same clock as frame times
+            recordModeOnNextFrame = true
+            recordingLimitReached = false
+            status.update { it.copy(recordingSeconds = 0, problemMarked = false, recordingLimitReached = false) }
+        } else {
+            showNotice("Could not start recording this session.")
+        }
     }
 
     override fun onDestroy() {
@@ -325,6 +343,12 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
 
     private fun handleActions(session: Session, frame: Frame, camera: Camera) {
         recorder.checkRecording(session)
+        if (recorder.recordingName != null &&
+            lastFrameNanos - recordingStartNanos >= SessionRecorder.MAX_RECORDING_SECONDS * 1_000_000_000L
+        ) {
+            recorder.stopRecording(session)
+            recordingLimitReached = true
+        }
         val actions = if (recorder.isPlayingBack) {
             recorder.recordedActions(frame).onEach { Log.i(EVENT_TAG, "replaying $it") }
         } else {
@@ -346,22 +370,19 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 }
                 is UserAction.SetMode -> setMode(action.mode)
                 UserAction.ClearWalls -> clearWalls()
+                UserAction.MarkProblem -> markProblem()
             }
         }
     }
 
-    private fun toggleRecording() {
-        val activeSession = session ?: return
-        if (recorder.recordingName != null) {
-            recorder.stopRecording(activeSession)
-            status.update { it.copy(recordingSeconds = null) }
-        } else if (recorder.startRecording(activeSession)) {
-            recordingStartNanos = lastFrameNanos
-            recordModeOnNextFrame = true
-            status.update { it.copy(recordingSeconds = 0) }
-        } else {
-            showNotice("Could not start recording.")
+    /** Live: keeps this session's recording. Played back: shows where the problem was marked. */
+    private fun markProblem() {
+        when {
+            recorder.isPlayingBack -> showNotice(PROBLEM_MARKED_IN_PLAYBACK_NOTICE)
+            recorder.markProblem() -> showNotice(PROBLEM_MARKED_NOTICE)
+            else -> showNotice(NOT_RECORDING_NOTICE)
         }
+        Log.i(EVENT_TAG, "problem marked")
     }
 
     private fun placeCube(frame: Frame, x: Float, y: Float) {
@@ -539,6 +560,8 @@ class ArActivity : ComponentActivity(), Choreographer.FrameCallback {
                 recordingSeconds = recorder.recordingName?.let {
                     ((frameTimeNanos - recordingStartNanos) / 1_000_000_000L).toInt()
                 },
+                problemMarked = recorder.problemMarked,
+                recordingLimitReached = recordingLimitReached,
             )
         }
 

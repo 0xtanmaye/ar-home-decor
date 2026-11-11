@@ -14,6 +14,7 @@ class UserActionTest {
             UserAction.SetMode(PlacementMode.WALL),
             UserAction.SetMode(PlacementMode.CUBE),
             UserAction.ClearWalls,
+            UserAction.MarkProblem,
         )
         for (action in actions) assertEquals(action, decodeUserAction(action.encode()))
     }

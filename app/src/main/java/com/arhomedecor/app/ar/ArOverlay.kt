@@ -39,7 +39,7 @@ fun ArOverlay(
     cubeEdgeCentimetres: Int,
     onModeChange: (PlacementMode) -> Unit,
     onClearWalls: () -> Unit,
-    onToggleRecording: () -> Unit,
+    onMarkProblem: () -> Unit,
 ) {
     Box(
         Modifier
@@ -85,7 +85,7 @@ fun ArOverlay(
                 }
             }
             if (status.devTools && status.playback == null) {
-                ActionChip(if (status.recordingSeconds == null) "Record session" else "Stop recording", onToggleRecording)
+                ActionChip("Mark problem", onMarkProblem)
             }
             Text(
                 text = hintFor(status, cubeEdgeCentimetres),

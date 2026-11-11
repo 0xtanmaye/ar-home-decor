@@ -282,23 +282,26 @@ make one of these:
 - **A screen recording.** This is the easiest: use your phone's own screen recorder (in the quick
   settings panel), reproduce the problem, and stop.
 - **An AR session recording.** These can be replayed exactly on a development phone, which makes
-  problems much easier to fix.
-  1. Tap **Record session** at the bottom of the AR screen **before** scanning; the panel's
-     **Session** line counts the time.
-  2. Point at the floor for a few seconds, then reproduce the problem and keep it in view for a
-     few seconds.
-  3. Tap **Stop recording**. Aim for **30–60 seconds**: a replay needs the first few seconds just
-     to start tracking.
-  4. To copy the recording off the phone:
+  problems much easier to fix. Test builds record every AR session automatically, from the moment
+  the AR screen opens; the panel's **Session** line shows the time.
+  1. When something looks wrong, keep it in view for a few seconds and tap **Mark problem** at
+     the bottom of the screen. The session's recording is then kept, and the moment is marked in
+     it.
+  2. Carry on, or leave the AR screen. The recording is saved when you leave the AR screen (or
+     after 5 minutes) as `session-<date>-<time>-marked.mp4`.
+
+     Sessions without a marked problem are deleted after a while: only the last 3 are kept.
+     Recordings take about 1 MB of storage per second.
+  3. To copy the recording off the phone:
      - **With Android Studio** (section 3): open **View → Tool Windows → Device Explorer**, go to
        `data/data/com.arhomedecor.app/files/recordings`, right-click the file and choose
        **Save As**.
      - **Without Android Studio** (section 4): with the phone connected, list the recordings,
        then copy one into the phone's **Download** folder, using its name from the list in
-       place of `rec-20261111-201051.mp4` (twice):
+       place of `session-20261112-101500-marked.mp4` (twice):
        ```
        adb shell run-as com.arhomedecor.app ls files/recordings
-       adb shell "run-as com.arhomedecor.app cat files/recordings/rec-20261111-201051.mp4 | cat > /sdcard/Download/rec-20261111-201051.mp4"
+       adb shell "run-as com.arhomedecor.app cat files/recordings/session-20261112-101500-marked.mp4 | cat > /sdcard/Download/session-20261112-101500-marked.mp4"
        ```
        It then appears in the phone's **Files** app under **Downloads**, and can be shared from
        there. Delete it from Downloads once it has been sent.
@@ -369,12 +372,18 @@ capture while this app is in the foreground and stop if another app comes to the
 
 ### Recording and replaying AR sessions
 
-Debug builds show **Record session** in the AR view. It uses ARCore's Recording & Playback API to
-save the camera images, motion sensor data and the user's taps to an MP4 in the app's private
-storage. Replaying a recording runs ARCore on that data instead of the live camera, so a problem
-seen once can be reproduced, and a fix compared with the behaviour before it, without walking the
-room again. ARCore recomputes tracking, planes and depth on each replay, so runs are close but not
-identical.
+Debug builds record every live AR session from its start, using ARCore's Recording & Playback API:
+the camera images, motion sensor data and the user's actions go into an MP4 in the app's private
+storage (`files/recordings`). Replaying a recording runs ARCore on that data instead of the live
+camera, so a problem seen once can be reproduced, and a fix compared with the behaviour before
+it, without walking the room again. ARCore recomputes tracking, planes and depth on each replay,
+so runs are close but not identical.
+
+Recording from the start matters: a replay begins with an empty map, so a recording started
+after a problem appeared cannot show it. **Mark problem** marks the moment (replays show a notice
+there and log `problem marked`) and keeps the session as `session-…-marked.mp4`. Unmarked
+sessions rotate (the last 3 are kept), and each recording stops after 5 minutes. Recordings made
+before this (`rec-….mp4`) are left alone.
 
 - `./tools/pull-recordings.sh` copies recordings to `recordings/`. That folder is ignored by git
   because the recordings show real rooms.

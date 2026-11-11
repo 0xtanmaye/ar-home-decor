@@ -23,6 +23,11 @@ import java.util.UUID
  * and compared before and after a change. ARCore recomputes tracking, planes and depth during
  * playback, so results are close to the original but not guaranteed identical.
  *
+ * Debug builds record every live AR session from its start ([startRecording] on resume), so
+ * that a problem can be replayed whenever it appears, without anyone having to start a recording
+ * beforehand. When the user marks a problem ([markProblem]), the session's file is kept (renamed
+ * to end in "-marked.mp4"); of the unmarked ones, only the latest [KEEP_UNMARKED] are kept.
+ *
  * Recordings are video of the user's surroundings, so they stay in the app's private storage;
  * tools/pull-recordings.sh copies them from a debug build.
  */
@@ -30,6 +35,10 @@ class SessionRecorder(private val directory: File) {
 
     /** File name of the recording in progress, or null. */
     var recordingName: String? = null
+        private set
+
+    /** The user has marked a problem in the recording in progress, so it will be kept. */
+    var problemMarked = false
         private set
 
     /** File name of the recording being played back, or null for a live session. */
@@ -42,11 +51,18 @@ class SessionRecorder(private val directory: File) {
     private val unrecorded = ArrayDeque<UserAction>()
     private var failedFrames = 0
 
-    /** Starts recording a running session. Returns false (and logs why) if it could not start. */
+    /**
+     * Starts recording a session (from its next frame) into a new file, first deleting older
+     * unmarked recordings so that, with this one, [KEEP_UNMARKED] remain. Returns false (and
+     * logs why) if it could not start.
+     */
     fun startRecording(session: Session): Boolean {
         if (isPlayingBack || recordingName != null) return false
         directory.mkdirs()
-        val name = "rec-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.mp4"
+        for (old in unmarkedRecordingsToDelete(directory.list()?.toList().orEmpty(), keep = KEEP_UNMARKED - 1)) {
+            if (File(directory, old).delete()) Log.i(TAG, "deleted older recording: $old")
+        }
+        val name = "$RECORDING_PREFIX${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.mp4"
         val config = RecordingConfig(session)
             .setMp4DatasetUri(Uri.fromFile(File(directory, name)))
             // Pausing ends the recording: playback can't represent the gap anyway.
@@ -55,6 +71,7 @@ class SessionRecorder(private val directory: File) {
         return try {
             session.startRecording(config)
             recordingName = name
+            problemMarked = false
             Log.i(TAG, "recording started: $name")
             true
         } catch (e: RecordingFailedException) {
@@ -73,9 +90,35 @@ class SessionRecorder(private val directory: File) {
         } catch (e: RecordingFailedException) {
             Log.e(TAG, "could not stop recording cleanly", e)
         }
+        Log.i(TAG, "recording stopped: $name")
+        finish(name)
+    }
+
+    /**
+     * Notes that the user saw a problem: the recording in progress will be kept. The moment
+     * itself goes into the recording as a [UserAction.MarkProblem]. Returns false if nothing is
+     * being recorded.
+     */
+    fun markProblem(): Boolean {
+        val name = recordingName ?: return false
+        problemMarked = true
+        Log.i(TAG, "problem marked in $name")
+        return true
+    }
+
+    /** Once a recording has ended: renames it if a problem was marked in it. */
+    private fun finish(name: String) {
         recordingName = null
         dropUnrecorded()
-        Log.i(TAG, "recording stopped: $name")
+        if (problemMarked) {
+            val marked = markedRecordingName(name)
+            if (File(directory, name).renameTo(File(directory, marked))) {
+                Log.i(TAG, "kept as $marked")
+            } else {
+                Log.w(TAG, "could not rename $name to $marked")
+            }
+        }
+        problemMarked = false
     }
 
     /**
@@ -87,8 +130,7 @@ class SessionRecorder(private val directory: File) {
         val status = session.recordingStatus
         if (status != RecordingStatus.OK) {
             Log.i(TAG, "recording ended ($status): $name")
-            recordingName = null
-            dropUnrecorded()
+            finish(name)
         }
     }
 
@@ -168,5 +210,32 @@ class SessionRecorder(private val directory: File) {
 
         /** About two seconds at 30 FPS: much longer than ARCore's "a few frames". */
         private const val MAX_FAILED_FRAMES = 60
+
+        /** Unmarked recordings kept, including the one in progress. */
+        const val KEEP_UNMARKED = 3
+
+        /**
+         * Recordings stop after this long (about 1 MB a second, so up to 300 MB), so that a
+         * forgotten session doesn't fill the phone. Problems usually show within a minute or two.
+         */
+        const val MAX_RECORDING_SECONDS = 300
+
+        const val RECORDING_PREFIX = "session-"
     }
+}
+
+/** The name a recording is kept under once a problem has been marked in it. */
+internal fun markedRecordingName(name: String): String = name.removeSuffix(".mp4") + "-marked.mp4"
+
+/**
+ * Of the automatic recordings in [names] (file names in the recordings folder), the unmarked ones
+ * to delete so that only the newest [keep] remain. Marked recordings, and any other files (such as
+ * recordings made before recording was automatic), are never deleted.
+ */
+internal fun unmarkedRecordingsToDelete(names: List<String>, keep: Int): List<String> {
+    val unmarked = names
+        .filter { it.startsWith(SessionRecorder.RECORDING_PREFIX) && it.endsWith(".mp4") && !it.endsWith("-marked.mp4") }
+        // Names hold the start time (yyyyMMdd-HHmmss), so they sort oldest first.
+        .sorted()
+    return unmarked.dropLast(keep.coerceAtLeast(0))
 }
