@@ -122,6 +122,50 @@ class PlaneGeometryTest {
         assertEquals(-1.4f, localFloorLevels(listOf(big, table))[1], 0f)
     }
 
+    // After ARCore lost its place and recovered: the floor it had found, which measured depth
+    // finds widely at its height, and a new piece of the same floor placed 17 cm too low.
+    private val measuredFloor = HorizontalPlaneInfo(y = -1.0f, x = 0f, z = 0f, radius = 3.5f, confirmedArea = 3f)
+    private val misplacedPiece = HorizontalPlaneInfo(y = -1.17f, x = 1f, z = 0.5f, radius = 0.8f)
+
+    @Test
+    fun unmeasuredLowerPieceDoesNotTurnAMeasuredFloorIntoARaisedSurface() {
+        assertArrayEquals(intArrayOf(0, 1), localFloorReferences(listOf(measuredFloor, misplacedPiece)))
+        // Both are then floor: each is its own reference.
+        assertEquals(PlaneKind.FLOOR, classifyUpward(misplacedPiece.y, misplacedPiece.y, wasFloor = null))
+    }
+
+    @Test
+    fun scatteredSupportBelowAMeasuredFloorIsNotEnough() {
+        // Reflections in a glossy floor confirm a misplaced piece in a few spots over time.
+        val reflected = HorizontalPlaneInfo(misplacedPiece.y, misplacedPiece.x, misplacedPiece.z, misplacedPiece.radius, confirmedArea = 0.25f)
+        assertArrayEquals(intArrayOf(0, 1), localFloorReferences(listOf(measuredFloor, reflected)))
+    }
+
+    @Test
+    fun withoutDepthTheLowestNeighbourIsTheFloor() {
+        val floor = HorizontalPlaneInfo(y = -1.0f, x = 0f, z = 0f, radius = 3.5f)
+        assertArrayEquals(intArrayOf(1, 1), localFloorReferences(listOf(floor, misplacedPiece)))
+    }
+
+    @Test
+    fun measuredFloorStillMakesABedARaisedSurface() {
+        val floor = HorizontalPlaneInfo(floorA.y, floorA.x, floorA.z, floorA.radius, confirmedArea = 3f)
+        val bed = HorizontalPlaneInfo(bedA.y, bedA.x, bedA.z, bedA.radius, confirmedArea = 0.6f)
+        val unmeasuredBed = HorizontalPlaneInfo(bedA.y, bedA.x, bedA.z, bedA.radius)
+        assertArrayEquals(intArrayOf(0, 0), localFloorReferences(listOf(floor, bed)))
+        assertArrayEquals(intArrayOf(0, 0), localFloorReferences(listOf(floor, unmeasuredBed)))
+    }
+
+    @Test
+    fun bedMeasuredBetterThanTheFloorBesideItGoesByItselfUntilTheFloorCatchesUp() {
+        // Its own reference meanwhile, so the camera's height decides (see classifyUpward).
+        val bed = HorizontalPlaneInfo(bedA.y, bedA.x, bedA.z, bedA.radius, confirmedArea = 0.6f)
+        val floorSoFar = HorizontalPlaneInfo(floorA.y, floorA.x, floorA.z, floorA.radius, confirmedArea = 0.3f)
+        assertArrayEquals(intArrayOf(0, 1), localFloorReferences(listOf(floorSoFar, bed)))
+        val floorLater = HorizontalPlaneInfo(floorA.y, floorA.x, floorA.z, floorA.radius, confirmedArea = 0.8f)
+        assertArrayEquals(intArrayOf(0, 0), localFloorReferences(listOf(floorLater, bed)))
+    }
+
     @Test
     fun floorPiecesAtSlightlyDifferentHeightsAllCountAsFloor() {
         assertEquals(PlaneKind.FLOOR, classifyUpward(planeY = -1.33f, localFloorY = -1.40f, wasFloor = null))

@@ -440,7 +440,12 @@ class PlaneRenderer(
         if (plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
             val localFloor = localFloorOf[plane] ?: return base
             val reference = floorReferenceOf[plane]?.let { if (it == plane) "itself" else "P${idOf(it)}" }
-            return String.format(Locale.US, "height=%+.3f above floor (%s) %s", pose.ty() - localFloor, reference, base)
+            val confirmed = coverage[plane]?.confirmedArea ?: 0f
+            return String.format(
+                Locale.US,
+                "height=%+.3f above floor (%s) area=%.1f depthConfirmed=%.2f %s",
+                pose.ty() - localFloor, reference, plane.outlineArea(), confirmed, base,
+            )
         }
         if (plane.type != Plane.Type.VERTICAL) return base
         val normal = pose.rotateVector(UP)
@@ -549,7 +554,19 @@ class PlaneRenderer(
 
     private fun Plane.horizontalInfo(): HorizontalPlaneInfo {
         val pose = centerPose
-        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), outlineRadius())
+        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), outlineRadius(), coverage[this]?.confirmedArea ?: 0f)
+    }
+
+    /** Area inside ARCore's outline, by the shoelace formula on its (x, z) vertices. */
+    private fun Plane.outlineArea(): Float {
+        val polygon = polygon
+        val count = polygon.remaining() / 2
+        var twiceArea = 0f
+        for (i in 0 until count) {
+            val j = (i + 1) % count
+            twiceArea += polygon.get(i * 2) * polygon.get(j * 2 + 1) - polygon.get(j * 2) * polygon.get(i * 2 + 1)
+        }
+        return abs(twiceArea) / 2f
     }
 
     /** Outline vertices are relative to the plane's centre, so the longest is the radius. */
@@ -860,7 +877,25 @@ class PlaneRenderer(
                     depthVerdict(x, surfaceY, z, view, cameraY, projection, ndcToUv, TOLERANCE_METRES, depth::depthAt)
                 },
             )
-            Log.i(AREA_TAG, "P${idOf(plane)} $kind ${area.describe()}")
+            val outline = mesh.arcoreGridOutline
+            var minX = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var minZ = Float.MAX_VALUE
+            var maxZ = -Float.MAX_VALUE
+            for (i in 0 until outline.size / 2) {
+                minX = minOf(minX, outline[i * 2])
+                maxX = maxOf(maxX, outline[i * 2])
+                minZ = minOf(minZ, outline[i * 2 + 1])
+                maxZ = maxOf(maxZ, outline[i * 2 + 1])
+            }
+            Log.i(
+                AREA_TAG,
+                String.format(
+                    Locale.US,
+                    "P%d %s y=%.3f depthConfirmed=%.2f box=[%.2f,%.2f]x[%.2f,%.2f] %s",
+                    idOf(plane), kind, surfaceY, planeCoverage?.confirmedArea ?: 0f, minX, maxX, minZ, maxZ, area.describe(),
+                ),
+            )
         }
     }
 

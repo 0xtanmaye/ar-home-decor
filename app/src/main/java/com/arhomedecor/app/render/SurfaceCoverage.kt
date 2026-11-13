@@ -79,6 +79,12 @@ class SurfaceCoverage {
     var lastSteepAtHeight = 0
         private set
 
+    /** Cells at or above [COVERAGE_DRAWN_VALUE]: where measured depth has confirmed the surface. */
+    private var confirmedCells = 0
+
+    /** Area that measured depth has confirmed, in square metres. */
+    val confirmedArea: Float get() = confirmedCells * COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+
     /**
      * Adds one frame of measurements: [count] world points in [points] (x, y, z triples) seen
      * from [camera] (x, y, z), against a surface at height [surfaceY].
@@ -129,7 +135,7 @@ class SurfaceCoverage {
             var seen = packed and 0xFFFF
             var seenThrough = packed ushr 16
             if (votes > 0) seen = minOf(seen + 1, COVERAGE_MAX_FRAMES) else seenThrough = minOf(seenThrough + 1, COVERAGE_MAX_FRAMES)
-            counts[key] = seen or (seenThrough shl 16)
+            setCounts(key, packed, seen or (seenThrough shl 16))
             changed = true
         }
         if (changed) version++
@@ -145,9 +151,17 @@ class SurfaceCoverage {
             val mine = counts[key] ?: 0
             val seen = minOf((mine and 0xFFFF) + (theirs and 0xFFFF), COVERAGE_MAX_FRAMES)
             val seenThrough = minOf((mine ushr 16) + (theirs ushr 16), COVERAGE_MAX_FRAMES)
-            counts[key] = seen or (seenThrough shl 16)
+            setCounts(key, mine, seen or (seenThrough shl 16))
         }
         version++
+    }
+
+    /** Replaces a cell's counts ([before] to [after]), keeping [confirmedCells] up to date. */
+    private fun setCounts(key: Long, before: Int, after: Int) {
+        counts[key] = after
+        val wasConfirmed = valueOf(before) >= COVERAGE_DRAWN_VALUE
+        val isConfirmed = valueOf(after) >= COVERAGE_DRAWN_VALUE
+        if (isConfirmed != wasConfirmed) confirmedCells += if (isConfirmed) 1 else -1
     }
 
     /**

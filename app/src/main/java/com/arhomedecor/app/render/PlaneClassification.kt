@@ -51,8 +51,23 @@ internal const val NEIGHBOUR_GAP_METRES = 1.0f
  */
 internal const val MIN_CAMERA_HEIGHT_ABOVE_FLOOR_METRES = 0.9f
 
-/** Footprint of an upward-facing plane: centre height and position, and outline radius. */
-internal class HorizontalPlaneInfo(val y: Float, val x: Float, val z: Float, val radius: Float)
+/**
+ * Measured depth supports an upward plane once it has confirmed at least this much of it (a patch
+ * about 30 cm square: more than a few stray cells); see [localFloorReferences].
+ */
+internal const val MIN_CONFIRMED_AREA_SQUARE_METRES = 0.1f
+
+/**
+ * Footprint of an upward-facing plane: centre height and position, outline radius, and the area
+ * measured depth has confirmed at its height (see [SurfaceCoverage.confirmedArea]).
+ */
+internal class HorizontalPlaneInfo(
+    val y: Float,
+    val x: Float,
+    val z: Float,
+    val radius: Float,
+    val confirmedArea: Float = 0f,
+)
 
 /**
  * For each plane, the index of the plane that is its local floor.
@@ -61,17 +76,36 @@ internal class HorizontalPlaneInfo(val y: Float, val x: Float, val z: Float, val
  * floor is the lowest upward plane among its neighbours (including itself). Looking only
  * nearby matters: another room's floor can sit lower, through a real step or slight drift,
  * and must not turn this room's floor into a "raised surface".
+ *
+ * ARCore can also place a plane at the wrong height: after losing its place and recovering, it
+ * has made new pieces of floor 10–20 cm below the floor it had already found, and moved older
+ * pieces by as much. Measured depth tells them apart: it finds the real floor widely at its
+ * height, and a misplaced piece below it only in scattered spots (a glossy floor's reflections
+ * appear below it). So where measured depth supports some of a plane's neighbours, a lower one is
+ * only taken as its floor if depth supports it at least as well as the plane itself; otherwise
+ * it still classifies itself, but doesn't turn a well-measured floor into a raised surface. The
+ * floor beside a bed or table is normally the better measured of the two; until it is (a bed
+ * scanned before the floor next to it), the bed is judged by the camera's height alone (see
+ * [classifyUpward]). Without depth, the lowest neighbour is used.
  */
 internal fun localFloorReferences(planes: List<HorizontalPlaneInfo>, neighbourGap: Float = NEIGHBOUR_GAP_METRES): IntArray =
     IntArray(planes.size) { i ->
         val plane = planes[i]
+        val neighbours = planes.indices.filter { j ->
+            j == i || hypot(plane.x - planes[j].x, plane.z - planes[j].z) - plane.radius - planes[j].radius <= neighbourGap
+        }
+        val depthSupported = neighbours.any { planes[it].confirmedArea >= MIN_CONFIRMED_AREA_SQUARE_METRES }
         var lowest = i
-        planes.forEachIndexed { j, other ->
-            val gap = hypot(plane.x - other.x, plane.z - other.z) - plane.radius - other.radius
-            if (gap <= neighbourGap && other.y < planes[lowest].y) lowest = j
+        for (j in neighbours) {
+            if (depthSupported && j != i && !planes[j].canBeFloorOf(plane)) continue
+            if (planes[j].y < planes[lowest].y) lowest = j
         }
         lowest
     }
+
+/** Whether measured depth supports this plane well enough to be [other]'s floor (see [localFloorReferences]). */
+private fun HorizontalPlaneInfo.canBeFloorOf(other: HorizontalPlaneInfo): Boolean =
+    confirmedArea >= MIN_CONFIRMED_AREA_SQUARE_METRES && confirmedArea >= other.confirmedArea
 
 /**
  * Floor or raised surface, from the plane's height above its local floor. [wasFloor] (the

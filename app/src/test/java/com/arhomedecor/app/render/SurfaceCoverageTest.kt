@@ -115,6 +115,27 @@ class SurfaceCoverageTest {
     }
 
     @Test
+    fun confirmedAreaCountsConfirmedCells() {
+        val cell = COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+        val a = SurfaceCoverage()
+        a.see(*onDesk)
+        assertEquals("seen once: not yet confirmed", 0f, a.confirmedArea, 0f)
+        a.see(*onDesk)
+        assertEquals(cell, a.confirmedArea, 1e-9f)
+        // Seen through often enough, the cell is refuted and no longer counts.
+        repeat(10) { a.see(*pastDesk) }
+        assertEquals(0f, a.confirmedArea, 0f)
+
+        // Absorbing a plane's coverage counts the cells its evidence confirms.
+        val b = SurfaceCoverage()
+        val c = SurfaceCoverage()
+        b.see(*onDesk)
+        c.see(*onDesk)
+        b.absorb(c)
+        assertEquals(cell, b.confirmedArea, 1e-9f)
+    }
+
+    @Test
     fun cellsAreIndexedFromNegativeCoordinatesToo() {
         assertEquals(-1, SurfaceCoverage.cellIndex(-0.01f))
         assertEquals(0, SurfaceCoverage.cellIndex(0.01f))
