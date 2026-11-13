@@ -440,11 +440,12 @@ class PlaneRenderer(
         if (plane.type == Plane.Type.HORIZONTAL_UPWARD_FACING) {
             val localFloor = localFloorOf[plane] ?: return base
             val reference = floorReferenceOf[plane]?.let { if (it == plane) "itself" else "P${idOf(it)}" }
-            val confirmed = coverage[plane]?.confirmedArea ?: 0f
+            val planeCoverage = coverage[plane]
             return String.format(
                 Locale.US,
-                "height=%+.3f above floor (%s) area=%.1f depthConfirmed=%.2f %s",
-                pose.ty() - localFloor, reference, plane.outlineArea(), confirmed, base,
+                "height=%+.3f above floor (%s) area=%.1f depthConfirmed=%.2f atHeight=%.2f %s",
+                pose.ty() - localFloor, reference, plane.outlineArea(), planeCoverage?.confirmedArea ?: 0f,
+                planeCoverage?.confirmedAreaAt(pose.ty()) ?: 0f, base,
             )
         }
         if (plane.type != Plane.Type.VERTICAL) return base
@@ -554,7 +555,7 @@ class PlaneRenderer(
 
     private fun Plane.horizontalInfo(): HorizontalPlaneInfo {
         val pose = centerPose
-        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), outlineRadius(), coverage[this]?.confirmedArea ?: 0f)
+        return HorizontalPlaneInfo(pose.ty(), pose.tx(), pose.tz(), outlineRadius(), coverage[this]?.confirmedAreaAt(pose.ty()) ?: 0f)
     }
 
     /** Area inside ARCore's outline, by the shoelace formula on its (x, z) vertices. */
@@ -892,8 +893,9 @@ class PlaneRenderer(
                 AREA_TAG,
                 String.format(
                     Locale.US,
-                    "P%d %s y=%.3f depthConfirmed=%.2f box=[%.2f,%.2f]x[%.2f,%.2f] %s",
-                    idOf(plane), kind, surfaceY, planeCoverage?.confirmedArea ?: 0f, minX, maxX, minZ, maxZ, area.describe(),
+                    "P%d %s y=%.3f depthConfirmed=%.2f atHeight=%.2f box=[%.2f,%.2f]x[%.2f,%.2f] %s",
+                    idOf(plane), kind, surfaceY, planeCoverage?.confirmedArea ?: 0f, planeCoverage?.confirmedAreaAt(surfaceY) ?: 0f,
+                    minX, maxX, minZ, maxZ, area.describe(),
                 ),
             )
         }

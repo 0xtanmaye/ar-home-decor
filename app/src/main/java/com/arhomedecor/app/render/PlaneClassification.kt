@@ -59,7 +59,7 @@ internal const val MIN_CONFIRMED_AREA_SQUARE_METRES = 0.1f
 
 /**
  * Footprint of an upward-facing plane: centre height and position, outline radius, and the area
- * measured depth has confirmed at its height (see [SurfaceCoverage.confirmedArea]).
+ * measured depth has confirmed at its current height (see [SurfaceCoverage.confirmedAreaAt]).
  */
 internal class HorizontalPlaneInfo(
     val y: Float,

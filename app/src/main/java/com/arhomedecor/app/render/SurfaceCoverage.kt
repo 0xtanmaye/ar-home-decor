@@ -2,6 +2,7 @@ package com.arhomedecor.app.render
 
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /** Size of a coverage cell. Small enough for a clean edge, large enough to fill quickly. */
@@ -32,6 +33,15 @@ internal const val COVERAGE_MAX_FRAMES = 30
  */
 internal const val COVERAGE_TOLERANCE_METRES = 0.025f
 internal const val COVERAGE_TOLERANCE_PER_METRE = 0.01f
+
+/**
+ * A confirmed cell supports a surface at its current height only if it was last measured within
+ * this of that height: the tolerance points are matched with at a typical 2.5 m. ARCore refines
+ * a tracked surface's height by a centimetre or two, and cells measured again follow it; but after
+ * losing its place it has slid a floor by 10–20 cm over a few seconds, and what was measured
+ * before then no longer says the surface is where the plane now is (see [SurfaceCoverage.confirmedAreaAt]).
+ */
+internal const val COVERAGE_SUPPORT_HEIGHT_METRES = 0.05f
 
 /**
  * What a cell's frame counts say, from 0 to 1: 0 = refuted (repeatedly seen through and hardly
@@ -82,8 +92,26 @@ class SurfaceCoverage {
     /** Cells at or above [COVERAGE_DRAWN_VALUE]: where measured depth has confirmed the surface. */
     private var confirmedCells = 0
 
+    /** For confirmed cells: the surface's height (mm) when the cell was last measured at it. */
+    private val confirmedAtMillimetres = HashMap<Long, Int>()
+
     /** Area that measured depth has confirmed, in square metres. */
     val confirmedArea: Float get() = confirmedCells * COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+
+    /**
+     * Area confirmed by measurements made with the surface at about [surfaceY] (within
+     * [COVERAGE_SUPPORT_HEIGHT_METRES]), in square metres: how well measured depth supports the
+     * surface where it is now.
+     */
+    fun confirmedAreaAt(surfaceY: Float): Float {
+        val millimetres = toMillimetres(surfaceY)
+        val tolerance = toMillimetres(COVERAGE_SUPPORT_HEIGHT_METRES)
+        var cells = 0
+        for (at in confirmedAtMillimetres.values) {
+            if (abs(at - millimetres) <= tolerance) cells++
+        }
+        return cells * COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+    }
 
     /**
      * Adds one frame of measurements: [count] world points in [points] (x, y, z triples) seen
@@ -129,13 +157,14 @@ class SurfaceCoverage {
             }
         }
         var changed = false
+        val surfaceMillimetres = toMillimetres(surfaceY)
         for ((key, votes) in frameVotes) {
             if (votes == 0) continue
             val packed = counts[key] ?: 0
             var seen = packed and 0xFFFF
             var seenThrough = packed ushr 16
             if (votes > 0) seen = minOf(seen + 1, COVERAGE_MAX_FRAMES) else seenThrough = minOf(seenThrough + 1, COVERAGE_MAX_FRAMES)
-            setCounts(key, packed, seen or (seenThrough shl 16))
+            setCounts(key, packed, seen or (seenThrough shl 16), if (votes > 0) surfaceMillimetres else null)
             changed = true
         }
         if (changed) version++
@@ -151,17 +180,27 @@ class SurfaceCoverage {
             val mine = counts[key] ?: 0
             val seen = minOf((mine and 0xFFFF) + (theirs and 0xFFFF), COVERAGE_MAX_FRAMES)
             val seenThrough = minOf((mine ushr 16) + (theirs ushr 16), COVERAGE_MAX_FRAMES)
-            setCounts(key, mine, seen or (seenThrough shl 16))
+            setCounts(key, mine, seen or (seenThrough shl 16), other.confirmedAtMillimetres[key])
         }
         version++
     }
 
-    /** Replaces a cell's counts ([before] to [after]), keeping [confirmedCells] up to date. */
-    private fun setCounts(key: Long, before: Int, after: Int) {
+    /**
+     * Replaces a cell's counts ([before] to [after]), keeping [confirmedCells] up to date, and for
+     * a confirmed cell the height it was measured at: [seenAtMillimetres] if it was measured now,
+     * else the height already recorded. A cell confirmed without a known height (two merged
+     * halves, neither confirmed on its own) supports no particular height.
+     */
+    private fun setCounts(key: Long, before: Int, after: Int, seenAtMillimetres: Int?) {
         counts[key] = after
         val wasConfirmed = valueOf(before) >= COVERAGE_DRAWN_VALUE
         val isConfirmed = valueOf(after) >= COVERAGE_DRAWN_VALUE
         if (isConfirmed != wasConfirmed) confirmedCells += if (isConfirmed) 1 else -1
+        if (!isConfirmed) {
+            confirmedAtMillimetres.remove(key)
+        } else if (seenAtMillimetres != null) {
+            confirmedAtMillimetres[key] = seenAtMillimetres
+        }
     }
 
     /**
@@ -188,6 +227,8 @@ class SurfaceCoverage {
 
     companion object {
         private fun valueOf(packed: Int): Float = coverageValue(packed and 0xFFFF, packed ushr 16)
+
+        private fun toMillimetres(metres: Float): Int = (metres * 1000f).roundToInt()
 
         /** Index of the cell containing [coordinate] along one axis. */
         internal fun cellIndex(coordinate: Float): Int = floor(coordinate / COVERAGE_CELL_METRES).toInt()

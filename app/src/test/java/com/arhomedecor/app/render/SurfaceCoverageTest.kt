@@ -136,6 +136,40 @@ class SurfaceCoverageTest {
     }
 
     @Test
+    fun supportCountsOnlyWhatWasMeasuredAtTheSurfacesCurrentHeight() {
+        val cell = COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+        val coverage = SurfaceCoverage()
+        repeat(2) { coverage.see(*onDesk) }
+        assertEquals(cell, coverage.confirmedAreaAt(0f), 1e-9f)
+        // Refined by a centimetre or two: still the same measurements.
+        assertEquals(cell, coverage.confirmedAreaAt(0.03f), 1e-9f)
+        // Slid 15 cm (as after ARCore recovers its place): they no longer support it there,
+        // though the cell stays confirmed.
+        assertEquals(0f, coverage.confirmedAreaAt(-0.15f), 0f)
+        assertEquals(cell, coverage.confirmedArea, 1e-9f)
+    }
+
+    @Test
+    fun measuringAgainAfterARefinementMovesTheSupportWithTheSurface() {
+        val cell = COVERAGE_CELL_METRES * COVERAGE_CELL_METRES
+        val coverage = SurfaceCoverage()
+        repeat(2) { coverage.see(*onDesk) }
+        // The surface is now placed 2 cm higher and the same spot is measured again there.
+        coverage.observe(onDesk, 1, camera, surfaceY = 0.02f, countsAgainst = true)
+        assertEquals(cell, coverage.confirmedAreaAt(0.06f), 1e-9f)
+    }
+
+    @Test
+    fun absorbedCellsKeepTheHeightTheyWereMeasuredAt() {
+        val a = SurfaceCoverage()
+        val b = SurfaceCoverage()
+        repeat(2) { b.see(*onDesk) }
+        a.absorb(b)
+        assertEquals(COVERAGE_CELL_METRES * COVERAGE_CELL_METRES, a.confirmedAreaAt(0f), 1e-9f)
+        assertEquals(0f, a.confirmedAreaAt(0.2f), 0f)
+    }
+
+    @Test
     fun cellsAreIndexedFromNegativeCoordinatesToo() {
         assertEquals(-1, SurfaceCoverage.cellIndex(-0.01f))
         assertEquals(0, SurfaceCoverage.cellIndex(0.01f))
