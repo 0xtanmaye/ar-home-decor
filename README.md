@@ -403,6 +403,21 @@ before this (`rec-….mp4`) are left alone.
 
   A white line marks ARCore's own outline.
 
+**Checking a change against every recording.** A fix for one recording can break another, and a
+single replay can take a path where the problem doesn't occur at all (whether ARCore loses track,
+for example). So replay every recording with the build before the change and with the change,
+the problem recording several times, and compare:
+
+```
+./tools/replay-logs.sh --times 3 /tmp/before recordings/*.mp4    # with the earlier build installed
+./tools/replay-logs.sh --times 3 /tmp/after recordings/*.mp4     # with the change installed
+python3 tools/compare-replays.py /tmp/before /tmp/after
+```
+
+`replay-logs.sh` saves each replay's log and stops if the app leaves the foreground. The
+comparison shows, per recording, the seconds in which a piece of floor was drawn as a raised
+surface or a bed or table as floor, and how often planes switched between the two.
+
 Logcat tags: `ArStats` (once a second), `ArEvents` (tracking and map events), `ArPlanes`
 (per-plane classification changes, with the plane each floor or raised surface was measured
 against and how much of it measured depth has confirmed), `ArSurfaces` (once a second per floor
